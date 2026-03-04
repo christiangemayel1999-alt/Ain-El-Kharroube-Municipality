@@ -1,0 +1,15 @@
+node_modules
+.env
+backend/node_modules
+backend/dist
+backend/.env
+frontend/node_modules
+frontend/.angular
+frontend/dist
+.DS_Store
+Thumbs.db
+.pgdata/
+*.log
+backend/test-results/
+frontend/test-results/
+

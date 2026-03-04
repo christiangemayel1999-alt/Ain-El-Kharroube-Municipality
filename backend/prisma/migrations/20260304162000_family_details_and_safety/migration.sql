@@ -1,0 +1,8 @@
+CREATE TYPE "FamilyCheckStatus" AS ENUM ('PENDING', 'CHECKED_SAFE');
+
+ALTER TABLE "Household"
+ADD COLUMN "safetyCheckStatus" "FamilyCheckStatus" NOT NULL DEFAULT 'PENDING',
+ADD COLUMN "hasCar" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN "carModel" TEXT,
+ADD COLUMN "carColor" TEXT,
+ADD COLUMN "carPlate" TEXT;

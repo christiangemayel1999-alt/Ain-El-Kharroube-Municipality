@@ -1,0 +1,51 @@
+{
+  "name": "frontend",
+  "version": "0.0.0",
+  "scripts": {
+    "ng": "ng",
+    "start": "ng serve",
+    "prebuild": "node scripts/write-app-config.cjs",
+    "build": "ng build",
+    "watch": "ng build --watch --configuration development",
+    "test:unit": "tsx --test tests/household-detail.validation.test.ts"
+  },
+  "prettier": {
+    "printWidth": 100,
+    "singleQuote": true,
+    "overrides": [
+      {
+        "files": "*.html",
+        "options": {
+          "parser": "angular"
+        }
+      }
+    ]
+  },
+  "private": true,
+  "dependencies": {
+    "@angular/animations": "^20.3.17",
+    "@angular/cdk": "^20.2.14",
+    "@angular/common": "^20.3.0",
+    "@angular/compiler": "^20.3.0",
+    "@angular/core": "^20.3.0",
+    "@angular/forms": "^20.3.0",
+    "@angular/material": "^20.2.14",
+    "@angular/platform-browser": "^20.3.0",
+    "@angular/router": "^20.3.0",
+    "@types/leaflet": "^1.9.21",
+    "chart.js": "^4.5.1",
+    "leaflet": "^1.9.4",
+    "ng2-charts": "^9.0.0",
+    "rxjs": "~7.8.0",
+    "tslib": "^2.3.0",
+    "zone.js": "~0.15.0"
+  },
+  "devDependencies": {
+    "@angular/build": "^20.3.18",
+    "@angular/cli": "^20.3.18",
+    "@angular/compiler-cli": "^20.3.0",
+    "tsx": "^4.20.5",
+    "typescript": "~5.9.2"
+  }
+}
+

@@ -1,0 +1,297 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  CASE_WORKER
+  FINANCE
+  VIEWER
+  POLICE
+}
+
+enum HousingType {
+  RENTAL
+  HOST
+  SHELTER
+  OTHER
+}
+
+enum HouseholdStatus {
+  ACTIVE
+  MOVED_OUT
+  CLOSED
+}
+
+enum FamilyCheckStatus {
+  PENDING
+  CHECKED_SAFE
+}
+
+enum CasePriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum HousingUnitStatus {
+  AVAILABLE
+  OCCUPIED
+  MAINTENANCE
+}
+
+enum RentalAgreementStatus {
+  ACTIVE
+  ENDED
+  TERMINATED
+}
+
+enum IncidentType {
+  MEDICAL
+  HOUSING
+  UTILITY
+  PROTECTION
+  OTHER
+}
+
+enum IncidentPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum IncidentStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+model User {
+  id           String      @id @default(uuid())
+  email        String      @unique
+  passwordHash String
+  fullName     String
+  role         Role
+  isActive     Boolean     @default(true)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  incidentsAssigned Incident[] @relation("IncidentAssignedUser")
+  auditLogs         AuditLog[]
+  emergencyPlans    EmergencyPlan[] @relation("EmergencyPlanCreatedBy")
+  notifications     Notification[]
+}
+
+model Zone {
+  id        String      @id @default(uuid())
+  code      String      @unique
+  name      String
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  households  Household[]
+  housingUnits HousingUnit[]
+}
+
+model Household {
+  id                 String          @id @default(uuid())
+  householdCode      String          @unique
+  headName           String?
+  arrivalDate        DateTime
+  originArea         String?
+  zoneId             String
+  housingType        HousingType
+  familySize         Int
+  status             HouseholdStatus
+  age0_4             Int             @default(0)
+  age5_17            Int             @default(0)
+  age18_59           Int             @default(0)
+  age60plus          Int             @default(0)
+  vulnerabilityFlags Json            @default("[]")
+  needs              Json            @default("[]")
+  notes              String?
+  members            Json            @default("[]")
+  safetyCheckStatus  FamilyCheckStatus @default(PENDING)
+  casePriority       CasePriority      @default(MEDIUM)
+  nationality        String?
+  preferredLanguage  String?
+  emergencyName      String?
+  emergencyPhone     String?
+  emergencyRelation  String?
+  checkedByUserId    String?
+  checkedAt          DateTime?
+  hasCar             Boolean         @default(false)
+  carModel           String?
+  carColor           String?
+  carPlate           String?
+  isVerified         Boolean         @default(false)
+  approxLat          Float?
+  approxLng          Float?
+  pinPrecisionM      Int             @default(500)
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  zone             Zone              @relation(fields: [zoneId], references: [id], onDelete: Restrict)
+  contact          HouseholdContact?
+  rentalAgreements RentalAgreement[]
+  incidents        Incident[]
+}
+
+model HouseholdContact {
+  id          String    @id @default(uuid())
+  householdId String    @unique
+  phone       String?
+  whatsapp    String?
+  consent     Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+}
+
+model HousingUnit {
+  id          String            @id @default(uuid())
+  unitCode    String            @unique
+  zoneId      String
+  streetLabel String?
+  type        String
+  rooms       Int
+  capacity    Int
+  utilities   Json              @default("{}")
+  condition   String
+  status      HousingUnitStatus
+  notes       String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  zone             Zone              @relation(fields: [zoneId], references: [id], onDelete: Restrict)
+  rentalAgreements RentalAgreement[]
+}
+
+model Landlord {
+  id        String    @id @default(uuid())
+  name      String
+  phone     String?
+  notes     String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  rentalAgreements RentalAgreement[]
+}
+
+model RentalAgreement {
+  id             String                @id @default(uuid())
+  agreementCode  String                @unique
+  householdId    String
+  housingUnitId  String
+  landlordId     String
+  startDate      DateTime
+  endDate        DateTime?
+  monthlyRent    Decimal               @db.Decimal(10, 2)
+  deposit        Decimal?              @db.Decimal(10, 2)
+  status         RentalAgreementStatus
+  notes          String?
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+
+  household  Household @relation(fields: [householdId], references: [id], onDelete: Restrict)
+  housingUnit HousingUnit @relation(fields: [housingUnitId], references: [id], onDelete: Restrict)
+  landlord   Landlord @relation(fields: [landlordId], references: [id], onDelete: Restrict)
+}
+
+model Incident {
+  id              String           @id @default(uuid())
+  incidentCode    String           @unique
+  householdId     String?
+  type            IncidentType
+  priority        IncidentPriority
+  description     String
+  assignedUserId  String?
+  status          IncidentStatus
+  dueDate         DateTime?
+  resolutionNotes String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  household    Household? @relation(fields: [householdId], references: [id], onDelete: SetNull)
+  assignedUser User?      @relation("IncidentAssignedUser", fields: [assignedUserId], references: [id], onDelete: SetNull)
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String
+  action    String
+  entity    String
+  entityId  String
+  timestamp DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+}
+
+model EmergencyPlan {
+  id              String                 @id @default(uuid())
+  name            String
+  description     String?
+  isActive        Boolean                @default(false)
+  createdByUserId String
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+
+  createdBy    User                    @relation("EmergencyPlanCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  roadClosures EmergencyRoadClosure[]
+  policePosts  EmergencyPolicePost[]
+}
+
+model EmergencyRoadClosure {
+  id        String   @id @default(uuid())
+  planId    String
+  roadLabel String
+  startLat  Float
+  startLng  Float
+  endLat    Float
+  endLng    Float
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  plan EmergencyPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+}
+
+model EmergencyPolicePost {
+  id            String   @id @default(uuid())
+  planId        String
+  label         String
+  lat           Float
+  lng           Float
+  officersCount Int      @default(1)
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  plan EmergencyPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+}
+
+model Notification {
+  id              String    @id @default(uuid())
+  userId          String
+  title           String
+  message         String
+  isRead          Boolean   @default(false)
+  emergencyPlanId String?
+  policePostLabel String?
+  targetLat       Float?
+  targetLng       Float?
+  readAt          DateTime?
+  createdAt       DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead, createdAt])
+}
+
