@@ -18,6 +18,11 @@ export const routes: Routes = [
     loadComponent: () => import("./pages/households.page").then((m) => m.HouseholdsPageComponent)
   },
   {
+    path: "cars",
+    canActivate: [authGuard],
+    loadComponent: () => import("./pages/cars.page").then((m) => m.CarsPageComponent)
+  },
+  {
     path: "households/:id",
     canActivate: [authGuard, roleGuard],
     data: { roles: ["ADMIN", "CASE_WORKER", "VIEWER"] },

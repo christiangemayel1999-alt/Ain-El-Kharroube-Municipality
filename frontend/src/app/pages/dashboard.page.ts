@@ -112,9 +112,42 @@ type HoveredPolicePoint = {
 
             <section class="drawer-section">
               <h3>2. Household details</h3>
+              <div class="coord-grid">
+                <mat-form-field appearance="outline">
+                  <mat-label>First name</mat-label>
+                  <input matInput formControlName="firstName" />
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Last name</mat-label>
+                  <input matInput formControlName="lastName" />
+                </mat-form-field>
+              </div>
+
+              <div class="coord-grid">
+                <mat-form-field appearance="outline">
+                  <mat-label>Father name</mat-label>
+                  <input matInput formControlName="fatherName" />
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Mother name</mat-label>
+                  <input matInput formControlName="motherName" />
+                </mat-form-field>
+              </div>
+
+              <div class="coord-grid">
+                <mat-form-field appearance="outline">
+                  <mat-label>Civil identity number</mat-label>
+                  <input matInput formControlName="civilIdentityNumber" />
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Phone number</mat-label>
+                  <input matInput formControlName="phoneNumber" />
+                </mat-form-field>
+              </div>
+
               <mat-form-field appearance="outline">
-                <mat-label>Head of household</mat-label>
-                <input matInput formControlName="headName" />
+                <mat-label>Map pin label</mat-label>
+                <input matInput formControlName="pinLabel" placeholder="e.g. Near Church Street" />
               </mat-form-field>
 
               <mat-form-field appearance="outline">
@@ -395,7 +428,12 @@ type HoveredPolicePoint = {
               <p class="error-text" *ngIf="emergencyError()">{{ emergencyError() }}</p>
               <mat-card class="hover-family-card" *ngIf="hoveredMarker() as marker">
                 <h3>Family at hovered pin</h3>
+                <p><strong>Label:</strong> {{ marker.pinLabel || "-" }}</p>
                 <p><strong>Code:</strong> {{ marker.householdCode }}</p>
+                <p><strong>Name:</strong> {{ marker.firstName || "-" }} {{ marker.lastName || "" }}</p>
+                <p><strong>Father / Mother:</strong> {{ marker.fatherName || "-" }} / {{ marker.motherName || "-" }}</p>
+                <p><strong>Civil ID:</strong> {{ marker.civilIdentityNumber || "-" }}</p>
+                <p><strong>Phone:</strong> {{ marker.phoneNumber || "-" }}</p>
                 <p><strong>Head:</strong> {{ marker.headName || '-' }}</p>
                 <p><strong>Family origin:</strong> {{ marker.originArea || '-' }}</p>
                 <p><strong>Arrival:</strong> {{ marker.arrivalDate | date:'yyyy-MM-dd' }}</p>
@@ -438,24 +476,11 @@ type HoveredPolicePoint = {
               </div>
 
               <mat-divider></mat-divider>
-              <h3>Expiring in 14 days</h3>
-              <mat-list>
-                <mat-list-item *ngFor="let agreement of s.workQueue.agreementsExpiringIn14Days.slice(0, 5)">
-                  {{ agreement.agreementCode }} - {{ agreement.household?.householdCode }}
-                </mat-list-item>
-              </mat-list>
-
-              <h3>High priority incidents</h3>
-              <mat-list>
-                <mat-list-item *ngFor="let incident of s.workQueue.highPriorityIncidents.slice(0, 5)">
-                  {{ incident.incidentCode }} - {{ incident.type }}
-                </mat-list-item>
-              </mat-list>
-
               <h3>Pending safety checks</h3>
               <mat-list>
-                <mat-list-item *ngFor="let h of s.workQueue.unverifiedHouseholds.slice(0, 5)">
-                  {{ h.householdCode }} - {{ h.zoneId }}
+                <mat-list-item *ngFor="let h of s.workQueue.pendingChecks.slice(0, 8)">
+                  {{ h.householdCode }} - {{ h.firstName || '' }} {{ h.lastName || '' }} - {{ h.zoneName || h.zoneId }}
+                  - {{ h.phoneNumber || 'No phone' }}
                 </mat-list-item>
               </mat-list>
 
@@ -973,7 +998,13 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
     manualLat: [null as number | null],
     manualLng: [null as number | null],
     precisionMode: ["EXACT", Validators.required],
-    headName: ["", [Validators.required, Validators.maxLength(120)]],
+    firstName: ["", [Validators.required, Validators.maxLength(80)]],
+    lastName: ["", [Validators.required, Validators.maxLength(80)]],
+    fatherName: ["", [Validators.required, Validators.maxLength(80)]],
+    motherName: ["", [Validators.required, Validators.maxLength(80)]],
+    civilIdentityNumber: ["", [Validators.required, Validators.maxLength(40)]],
+    phoneNumber: ["", [Validators.required, Validators.maxLength(40)]],
+    pinLabel: ["", [Validators.maxLength(120)]],
     originArea: ["", [Validators.required, Validators.maxLength(160)]],
     nationality: ["Lebanese"],
     preferredLanguage: ["Arabic"],
@@ -1160,9 +1191,18 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
     const pinPrecisionM = this.arrivalForm.get("precisionMode")?.value === "GRID_500M" ? 500 : 0;
 
     this.submitting.set(true);
+    const firstName = String(form.firstName ?? "").trim();
+    const lastName = String(form.lastName ?? "").trim();
     this.api
       .post("/households", {
-        headName: String(form.headName ?? "").trim(),
+        firstName,
+        lastName,
+        fatherName: String(form.fatherName ?? "").trim(),
+        motherName: String(form.motherName ?? "").trim(),
+        civilIdentityNumber: String(form.civilIdentityNumber ?? "").trim(),
+        phoneNumber: String(form.phoneNumber ?? "").trim(),
+        pinLabel: String(form.pinLabel ?? "").trim() || null,
+        headName: `${firstName} ${lastName}`.trim(),
         originArea: String(form.originArea ?? "").trim(),
         nationality: String(form.nationality ?? "").trim() || null,
         preferredLanguage: String(form.preferredLanguage ?? "").trim() || null,
@@ -1424,7 +1464,12 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
         !!String(this.arrivalForm.get("carPlate")?.value ?? "").trim());
 
     return (
-      !!this.arrivalForm.get("headName")?.valid &&
+      !!this.arrivalForm.get("firstName")?.valid &&
+      !!this.arrivalForm.get("lastName")?.valid &&
+      !!this.arrivalForm.get("fatherName")?.valid &&
+      !!this.arrivalForm.get("motherName")?.valid &&
+      !!this.arrivalForm.get("civilIdentityNumber")?.valid &&
+      !!this.arrivalForm.get("phoneNumber")?.valid &&
       !!this.arrivalForm.get("originArea")?.valid &&
       !!this.arrivalForm.get("housingType")?.valid &&
       !!this.arrivalForm.get("casePriority")?.valid &&
@@ -1780,7 +1825,9 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
       });
 
       circle.bindPopup(
-        `${marker.householdCode} | ${marker.headName || "Unknown head"} | family size: ${marker.familySize} | safety: ${
+        `${marker.pinLabel || marker.householdCode} | ${
+          `${marker.firstName || ""} ${marker.lastName || ""}`.trim() || marker.headName || "Unknown head"
+        } | family size: ${marker.familySize} | safety: ${
           marker.safetyCheckStatus === "CHECKED_SAFE" ? "safe" : "pending"
         } | from: ${marker.originArea || "Unknown"} | ${marker.pinPrecisionM === 0 ? "exact" : `+/-${marker.pinPrecisionM}m`}`
       );
@@ -1939,7 +1986,13 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
       manualLat: null,
       manualLng: null,
       precisionMode: "EXACT",
-      headName: "",
+      firstName: "",
+      lastName: "",
+      fatherName: "",
+      motherName: "",
+      civilIdentityNumber: "",
+      phoneNumber: "",
+      pinLabel: "",
       originArea: "",
       nationality: "Lebanese",
       preferredLanguage: "Arabic",

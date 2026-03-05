@@ -1,0 +1,259 @@
+import { CommonModule } from "@angular/common";
+import { Component, inject, signal } from "@angular/core";
+import { FormBuilder, ReactiveFormsModule } from "@angular/forms";
+import { MatButtonModule } from "@angular/material/button";
+import { MatCardModule } from "@angular/material/card";
+import { MatFormFieldModule } from "@angular/material/form-field";
+import { MatInputModule } from "@angular/material/input";
+import { MatSelectModule } from "@angular/material/select";
+import { RouterModule } from "@angular/router";
+import { CarRecord } from "../models";
+import { ApiService } from "../services/api.service";
+
+@Component({
+  selector: "app-cars-page",
+  standalone: true,
+  imports: [
+    CommonModule,
+    ReactiveFormsModule,
+    RouterModule,
+    MatCardModule,
+    MatFormFieldModule,
+    MatInputModule,
+    MatSelectModule,
+    MatButtonModule
+  ],
+  template: `
+    <div class="shell">
+      <mat-card>
+        <h2>Cars Registry</h2>
+        <form class="filters" [formGroup]="filterForm" (ngSubmit)="applyFilters()">
+          <mat-form-field appearance="outline">
+            <mat-label>Search</mat-label>
+            <input matInput formControlName="q" placeholder="Plate, model, driver, civil ID" />
+          </mat-form-field>
+
+          <mat-form-field appearance="outline">
+            <mat-label>Model</mat-label>
+            <input matInput formControlName="model" />
+          </mat-form-field>
+
+          <mat-form-field appearance="outline">
+            <mat-label>Color</mat-label>
+            <input matInput formControlName="color" />
+          </mat-form-field>
+
+          <mat-form-field appearance="outline">
+            <mat-label>Safety check</mat-label>
+            <mat-select formControlName="safetyCheckStatus">
+              <mat-option value="">All</mat-option>
+              <mat-option value="PENDING">Pending</mat-option>
+              <mat-option value="CHECKED_SAFE">Checked safe</mat-option>
+            </mat-select>
+          </mat-form-field>
+
+          <button mat-raised-button color="primary" type="submit">Search</button>
+          <button mat-button type="button" (click)="resetFilters()">Reset</button>
+        </form>
+
+        <div class="content-grid">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Plate</th>
+                  <th>Model</th>
+                  <th>Color</th>
+                  <th>Driver</th>
+                  <th>Section</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  *ngFor="let car of cars()"
+                  (click)="selectCar(car)"
+                  [class.active]="selectedCar()?.householdId === car.householdId"
+                >
+                  <td>{{ car.carPlate || "-" }}</td>
+                  <td>{{ car.carModel || "-" }}</td>
+                  <td>{{ car.carColor || "-" }}</td>
+                  <td>{{ displayDriverName(car) }}</td>
+                  <td>{{ car.zone.name || "-" }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="muted" *ngIf="!cars().length">No cars found with current filters.</p>
+          </div>
+
+          <mat-card class="detail-card" *ngIf="selectedCar() as car">
+            <h3>Driver Details</h3>
+            <p><strong>Household:</strong> {{ car.householdCode }}</p>
+            <p><strong>Name:</strong> {{ displayDriverName(car) }}</p>
+            <p><strong>Father:</strong> {{ car.fatherName || "-" }}</p>
+            <p><strong>Mother:</strong> {{ car.motherName || "-" }}</p>
+            <p><strong>Civil ID:</strong> {{ car.civilIdentityNumber || "-" }}</p>
+            <p><strong>Phone:</strong> {{ car.phoneNumber || "-" }}</p>
+            <p><strong>Family origin:</strong> {{ car.originArea || "-" }}</p>
+            <p [ngClass]="car.safetyCheckStatus === 'CHECKED_SAFE' ? 'status-safe' : 'status-pending'">
+              <strong>Safety check:</strong>
+              {{ car.safetyCheckStatus === "CHECKED_SAFE" ? "Checked and safe" : "Not checked (pending)" }}
+            </p>
+            <p><strong>Car:</strong> {{ car.carModel || "-" }} | {{ car.carColor || "-" }} | {{ car.carPlate || "-" }}</p>
+            <a mat-button color="primary" [routerLink]="['/households', car.householdId]">Open household</a>
+          </mat-card>
+        </div>
+      </mat-card>
+    </div>
+  `,
+  styles: [
+    `
+      .shell {
+        padding: 1rem;
+      }
+
+      .filters {
+        display: grid;
+        gap: 0.75rem;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        margin-bottom: 0.75rem;
+        align-items: center;
+      }
+
+      .content-grid {
+        display: grid;
+        gap: 0.75rem;
+        grid-template-columns: 2fr 1fr;
+      }
+
+      .table-wrap {
+        overflow-x: auto;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      th,
+      td {
+        border-bottom: 1px solid #d9e2e8;
+        text-align: left;
+        padding: 0.5rem;
+      }
+
+      tbody tr {
+        cursor: pointer;
+      }
+
+      tbody tr.active {
+        background: #e9f4fb;
+      }
+
+      .detail-card {
+        align-self: start;
+        background: #f8fafc;
+        border: 1px solid #d6e0e7;
+      }
+
+      .detail-card p {
+        margin: 0.35rem 0;
+      }
+
+      .muted {
+        color: #64748b;
+      }
+
+      .status-pending {
+        color: #b91c1c;
+        font-weight: 600;
+      }
+
+      .status-safe {
+        color: #15803d;
+        font-weight: 600;
+      }
+
+      @media (max-width: 1024px) {
+        .filters,
+        .content-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    `
+  ]
+})
+export class CarsPageComponent {
+  private readonly api = inject(ApiService);
+  private readonly fb = inject(FormBuilder);
+
+  readonly cars = signal<CarRecord[]>([]);
+  readonly selectedCar = signal<CarRecord | null>(null);
+
+  readonly filterForm = this.fb.nonNullable.group({
+    q: [""],
+    model: [""],
+    color: [""],
+    safetyCheckStatus: [""]
+  });
+
+  constructor() {
+    this.loadCars();
+  }
+
+  applyFilters() {
+    this.loadCars();
+  }
+
+  resetFilters() {
+    this.filterForm.setValue({
+      q: "",
+      model: "",
+      color: "",
+      safetyCheckStatus: ""
+    });
+    this.loadCars();
+  }
+
+  selectCar(car: CarRecord) {
+    this.selectedCar.set(car);
+  }
+
+  displayDriverName(car: CarRecord) {
+    const first = String(car.firstName ?? "").trim();
+    const last = String(car.lastName ?? "").trim();
+    const full = `${first} ${last}`.trim();
+    if (full) {
+      return full;
+    }
+    return car.headName || "-";
+  }
+
+  private loadCars() {
+    const form = this.filterForm.getRawValue();
+    const params: Record<string, string> = {};
+
+    if (form.q) {
+      params["q"] = form.q;
+    }
+    if (form.model) {
+      params["model"] = form.model;
+    }
+    if (form.color) {
+      params["color"] = form.color;
+    }
+    if (form.safetyCheckStatus) {
+      params["safetyCheckStatus"] = form.safetyCheckStatus;
+    }
+
+    this.api.get<CarRecord[]>("/cars", params).subscribe((rows) => {
+      this.cars.set(rows);
+      const current = this.selectedCar();
+      if (!current) {
+        this.selectedCar.set(rows[0] ?? null);
+        return;
+      }
+      const next = rows.find((row) => row.householdId === current.householdId) ?? rows[0] ?? null;
+      this.selectedCar.set(next);
+    });
+  }
+}

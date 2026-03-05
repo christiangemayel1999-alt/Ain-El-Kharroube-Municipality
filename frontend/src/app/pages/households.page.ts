@@ -10,6 +10,7 @@ import { MatTableDataSource, MatTableModule } from "@angular/material/table";
 import { RouterModule } from "@angular/router";
 import { Household, Zone } from "../models";
 import { ApiService } from "../services/api.service";
+import { AuthService } from "../services/auth.service";
 
 @Component({
   selector: "app-households-page",
@@ -62,7 +63,7 @@ import { ApiService } from "../services/api.service";
 
             <ng-container matColumnDef="headName">
               <th mat-header-cell *matHeaderCellDef>Head</th>
-              <td mat-cell *matCellDef="let row">{{ row.headName || '-' }}</td>
+              <td mat-cell *matCellDef="let row">{{ displayFamilyName(row) }}</td>
             </ng-container>
 
             <ng-container matColumnDef="originArea">
@@ -96,6 +97,9 @@ import { ApiService } from "../services/api.service";
               <th mat-header-cell *matHeaderCellDef>Actions</th>
               <td mat-cell *matCellDef="let row">
                 <a mat-button color="primary" [routerLink]="['/households', row.id]">Open</a>
+                <button mat-button color="warn" type="button" *ngIf="canDeleteHousehold()" (click)="deleteHousehold(row.id)">
+                  Delete
+                </button>
               </td>
             </ng-container>
 
@@ -143,6 +147,7 @@ import { ApiService } from "../services/api.service";
 })
 export class HouseholdsPageComponent implements AfterViewInit {
   private readonly api = inject(ApiService);
+  private readonly auth = inject(AuthService);
   private readonly fb = inject(FormBuilder);
 
   readonly zones = signal<Zone[]>([]);
@@ -169,6 +174,27 @@ export class HouseholdsPageComponent implements AfterViewInit {
   resetFilters() {
     this.filterForm.setValue({ zoneId: "", status: "" });
     this.loadHouseholds();
+  }
+
+  canDeleteHousehold() {
+    return this.auth.currentUser()?.role === "ADMIN";
+  }
+
+  deleteHousehold(id: string) {
+    if (!this.canDeleteHousehold()) {
+      return;
+    }
+    if (!window.confirm("Delete this family record?")) {
+      return;
+    }
+    this.api.delete(`/households/${id}`).subscribe({
+      next: () => this.loadHouseholds()
+    });
+  }
+
+  displayFamilyName(row: Household) {
+    const full = `${row.firstName ?? ""} ${row.lastName ?? ""}`.trim();
+    return full || row.headName || "-";
   }
 
   private loadZones() {

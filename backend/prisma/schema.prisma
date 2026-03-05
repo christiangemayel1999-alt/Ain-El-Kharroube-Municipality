@@ -102,6 +102,13 @@ model Zone {
 model Household {
   id                 String          @id @default(uuid())
   householdCode      String          @unique
+  firstName          String?
+  lastName           String?
+  fatherName         String?
+  motherName         String?
+  civilIdentityNumber String?        @unique
+  phoneNumber        String?
+  pinLabel           String?
   headName           String?
   arrivalDate        DateTime
   originArea         String?

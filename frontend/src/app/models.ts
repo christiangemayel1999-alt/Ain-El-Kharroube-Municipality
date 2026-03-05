@@ -34,6 +34,13 @@ export interface HouseholdMember {
 export interface Household {
   id: string;
   householdCode: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  fatherName?: string | null;
+  motherName?: string | null;
+  civilIdentityNumber?: string | null;
+  phoneNumber?: string | null;
+  pinLabel?: string | null;
   headName: string | null;
   arrivalDate: string;
   originArea?: string | null;
@@ -89,13 +96,30 @@ export interface DashboardSummary {
     newArrivalsPerWeek: Array<{ week: string; value: number }>;
   };
   workQueue: {
-    agreementsExpiringIn14Days: any[];
-    highPriorityIncidents: any[];
-    unverifiedHouseholds: any[];
+    pendingChecks: Array<{
+      id: string;
+      householdCode: string;
+      firstName: string | null;
+      lastName: string | null;
+      headName: string | null;
+      zoneId: string;
+      zoneName: string | null;
+      originArea: string | null;
+      arrivalDate: string;
+      phoneNumber: string | null;
+      casePriority: "LOW" | "MEDIUM" | "HIGH";
+    }>;
   };
   mapMarkers: Array<{
     id: string;
     householdCode: string;
+    firstName: string | null;
+    lastName: string | null;
+    fatherName: string | null;
+    motherName: string | null;
+    civilIdentityNumber: string | null;
+    phoneNumber: string | null;
+    pinLabel: string | null;
     headName: string | null;
     originArea: string | null;
     arrivalDate: string;
@@ -153,6 +177,26 @@ export interface NotificationItem {
   targetLat?: number | null;
   targetLng?: number | null;
   readAt?: string | null;
+  createdAt: string;
+}
+
+export interface CarRecord {
+  householdId: string;
+  householdCode: string;
+  firstName: string | null;
+  lastName: string | null;
+  fatherName: string | null;
+  motherName: string | null;
+  headName: string | null;
+  civilIdentityNumber: string | null;
+  phoneNumber: string | null;
+  originArea: string | null;
+  safetyCheckStatus: "PENDING" | "CHECKED_SAFE";
+  casePriority: "LOW" | "MEDIUM" | "HIGH";
+  carModel: string | null;
+  carColor: string | null;
+  carPlate: string | null;
+  zone: Zone;
   createdAt: string;
 }
 

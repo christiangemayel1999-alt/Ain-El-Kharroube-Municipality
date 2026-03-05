@@ -7,7 +7,7 @@ import { MatFormFieldModule } from "@angular/material/form-field";
 import { MatInputModule } from "@angular/material/input";
 import { MatSelectModule } from "@angular/material/select";
 import { MatTabsModule } from "@angular/material/tabs";
-import { ActivatedRoute } from "@angular/router";
+import { ActivatedRoute, Router } from "@angular/router";
 import { Household, Role } from "../models";
 import { ApiService } from "../services/api.service";
 import { AuthService } from "../services/auth.service";
@@ -31,6 +31,9 @@ import { getMissingCarFields } from "./household-detail.validation";
       <mat-card>
         <h2>{{ h.householdCode }}</h2>
         <p>Section: {{ h.zone?.name || h.zoneId }}</p>
+        <button mat-stroked-button color="warn" type="button" *ngIf="canDeleteHousehold()" (click)="deleteHousehold()">
+          Delete family
+        </button>
       </mat-card>
 
       <mat-card>
@@ -38,6 +41,11 @@ import { getMissingCarFields } from "./household-detail.validation";
           <mat-tab label="Overview">
             <div class="tab-content">
               <p><strong>Map pin:</strong> {{ h.approxLat }}, {{ h.approxLng }} ({{ h.pinPrecisionM === 0 ? 'Exact' : '+/-' + h.pinPrecisionM + 'm' }})</p>
+              <p><strong>Pin label:</strong> {{ h.pinLabel || '-' }}</p>
+              <p><strong>First / Last name:</strong> {{ h.firstName || '-' }} {{ h.lastName || '' }}</p>
+              <p><strong>Father / Mother:</strong> {{ h.fatherName || '-' }} / {{ h.motherName || '-' }}</p>
+              <p><strong>Civil identity number:</strong> {{ h.civilIdentityNumber || '-' }}</p>
+              <p><strong>Phone number:</strong> {{ h.phoneNumber || '-' }}</p>
               <p [ngClass]="h.safetyCheckStatus === 'CHECKED_SAFE' ? 'status-safe' : 'status-pending'">
                 <strong>Safety check:</strong> {{ h.safetyCheckStatus === 'CHECKED_SAFE' ? 'Checked and safe' : 'Not checked (pending)' }}
               </p>
@@ -64,6 +72,41 @@ import { getMissingCarFields } from "./household-detail.validation";
               <form *ngIf="canEditHousehold()" [formGroup]="householdForm" (ngSubmit)="saveHousehold()" class="edit-form">
                 <h3>Edit family record</h3>
                 <div class="grid">
+                  <mat-form-field appearance="outline">
+                    <mat-label>First name</mat-label>
+                    <input matInput formControlName="firstName" />
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Last name</mat-label>
+                    <input matInput formControlName="lastName" />
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Father name</mat-label>
+                    <input matInput formControlName="fatherName" />
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Mother name</mat-label>
+                    <input matInput formControlName="motherName" />
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Civil identity number</mat-label>
+                    <input matInput formControlName="civilIdentityNumber" />
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Phone number</mat-label>
+                    <input matInput formControlName="phoneNumber" />
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Map pin label</mat-label>
+                    <input matInput formControlName="pinLabel" />
+                  </mat-form-field>
+
                   <mat-form-field appearance="outline">
                     <mat-label>Head of household</mat-label>
                     <input matInput formControlName="headName" />
@@ -237,6 +280,10 @@ import { getMissingCarFields } from "./household-detail.validation";
         gap: 1rem;
       }
 
+      .shell mat-card:first-child button {
+        margin-top: 0.5rem;
+      }
+
       .tab-content {
         padding: 1rem 0.25rem;
       }
@@ -294,6 +341,7 @@ import { getMissingCarFields } from "./household-detail.validation";
 })
 export class HouseholdDetailPageComponent {
   private readonly route = inject(ActivatedRoute);
+  private readonly router = inject(Router);
   private readonly api = inject(ApiService);
   private readonly auth = inject(AuthService);
   private readonly fb = inject(FormBuilder);
@@ -306,6 +354,13 @@ export class HouseholdDetailPageComponent {
   readonly contactMessage = signal<string | null>(null);
 
   readonly householdForm = this.fb.group({
+    firstName: ["", Validators.required],
+    lastName: ["", Validators.required],
+    fatherName: ["", Validators.required],
+    motherName: ["", Validators.required],
+    civilIdentityNumber: ["", Validators.required],
+    phoneNumber: ["", Validators.required],
+    pinLabel: [""],
     headName: [""],
     originArea: [""],
     nationality: [""],
@@ -352,6 +407,29 @@ export class HouseholdDetailPageComponent {
     return this.canViewContacts();
   }
 
+  canDeleteHousehold() {
+    return this.auth.currentUser()?.role === "ADMIN";
+  }
+
+  deleteHousehold() {
+    if (!this.householdId || !this.canDeleteHousehold()) {
+      return;
+    }
+
+    if (!window.confirm("Delete this family record permanently?")) {
+      return;
+    }
+
+    this.api.delete(`/households/${this.householdId}`).subscribe({
+      next: () => {
+        void this.router.navigateByUrl("/households");
+      },
+      error: () => {
+        this.householdError.set("Could not delete family record.");
+      }
+    });
+  }
+
   saveHousehold() {
     if (!this.householdId || !this.canEditHousehold()) {
       return;
@@ -383,6 +461,13 @@ export class HouseholdDetailPageComponent {
     this.householdError.set(null);
     this.api
       .patch<Household>(`/households/${this.householdId}`, {
+        firstName: String(form.firstName ?? "").trim(),
+        lastName: String(form.lastName ?? "").trim(),
+        fatherName: String(form.fatherName ?? "").trim(),
+        motherName: String(form.motherName ?? "").trim(),
+        civilIdentityNumber: String(form.civilIdentityNumber ?? "").trim(),
+        phoneNumber: String(form.phoneNumber ?? "").trim(),
+        pinLabel: String(form.pinLabel ?? "").trim() || null,
         headName: String(form.headName ?? "").trim() || null,
         originArea: String(form.originArea ?? "").trim() || null,
         nationality: String(form.nationality ?? "").trim() || null,
@@ -443,6 +528,13 @@ export class HouseholdDetailPageComponent {
     this.api.get<Household>(`/households/${id}`).subscribe((household) => {
       this.household.set(household);
       this.householdForm.patchValue({
+        firstName: household.firstName ?? "",
+        lastName: household.lastName ?? "",
+        fatherName: household.fatherName ?? "",
+        motherName: household.motherName ?? "",
+        civilIdentityNumber: household.civilIdentityNumber ?? "",
+        phoneNumber: household.phoneNumber ?? "",
+        pinLabel: household.pinLabel ?? "",
         headName: household.headName ?? "",
         originArea: household.originArea ?? "",
         nationality: household.nationality ?? "",

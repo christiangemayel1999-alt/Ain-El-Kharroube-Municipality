@@ -1,4 +1,4 @@
-import { FamilyCheckStatus, RentalAgreementStatus } from "@prisma/client";
+import { FamilyCheckStatus } from "@prisma/client";
 import { Router } from "express";
 import { prisma } from "../lib/prisma";
 import { asyncHandler } from "../utils/asyncHandler";
@@ -21,26 +21,20 @@ dashboardRouter.get(
       activeHouseholds,
       occupiedUnits,
       availableUnits,
-      highPriorityIncidents,
-      unverified,
+      pendingChecks,
       zones,
       householdsWithZone,
       mapHouseholds,
-      expiringAgreements,
       activeEmergencyPlan
     ] = await Promise.all([
       prisma.household.findMany({ where: { status: "ACTIVE" } }),
       prisma.housingUnit.count({ where: { status: "OCCUPIED" } }),
       prisma.housingUnit.count({ where: { status: "AVAILABLE" } }),
-      prisma.incident.findMany({
-        where: { priority: "HIGH", status: { in: ["OPEN", "IN_PROGRESS"] } },
-        orderBy: { createdAt: "desc" },
-        take: 10
-      }),
       prisma.household.findMany({
         where: { safetyCheckStatus: FamilyCheckStatus.PENDING },
+        include: { zone: true },
         orderBy: { createdAt: "desc" },
-        take: 10
+        take: 50
       }),
       prisma.zone.findMany({ orderBy: { name: "asc" } }),
       prisma.household.findMany({ include: { zone: true } }),
@@ -49,6 +43,13 @@ dashboardRouter.get(
         select: {
           id: true,
           householdCode: true,
+          firstName: true,
+          lastName: true,
+          fatherName: true,
+          motherName: true,
+          civilIdentityNumber: true,
+          phoneNumber: true,
+          pinLabel: true,
           headName: true,
           originArea: true,
           zoneId: true,
@@ -69,18 +70,6 @@ dashboardRouter.get(
           carColor: true,
           carPlate: true
         }
-      }),
-      prisma.rentalAgreement.findMany({
-        where: {
-          status: RentalAgreementStatus.ACTIVE,
-          endDate: {
-            gte: new Date(),
-            lte: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000)
-          }
-        },
-        include: { household: true, housingUnit: true },
-        orderBy: { endDate: "asc" },
-        take: 20
       }),
       prisma.emergencyPlan.findFirst({
         where: { isActive: true },
@@ -158,9 +147,19 @@ dashboardRouter.get(
         newArrivalsPerWeek
       },
       workQueue: {
-        agreementsExpiringIn14Days: expiringAgreements,
-        highPriorityIncidents,
-        unverifiedHouseholds: unverified
+        pendingChecks: pendingChecks.map((h) => ({
+          id: h.id,
+          householdCode: h.householdCode,
+          firstName: h.firstName,
+          lastName: h.lastName,
+          headName: h.headName,
+          zoneId: h.zoneId,
+          zoneName: h.zone?.name ?? null,
+          originArea: h.originArea,
+          arrivalDate: h.arrivalDate,
+          phoneNumber: h.phoneNumber,
+          casePriority: h.casePriority
+        }))
       },
       mapMarkers: mapHouseholds.map((h) => ({
         ...h,

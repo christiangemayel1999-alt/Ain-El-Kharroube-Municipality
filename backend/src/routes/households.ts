@@ -37,6 +37,13 @@ const householdMemberSchema = z
   });
 
 const householdSchemaBase = z.object({
+  firstName: z.string().trim().min(1).max(80),
+  lastName: z.string().trim().min(1).max(80),
+  fatherName: z.string().trim().min(1).max(80),
+  motherName: z.string().trim().min(1).max(80),
+  civilIdentityNumber: z.string().trim().min(3).max(40),
+  phoneNumber: z.string().trim().min(7).max(40),
+  pinLabel: z.string().trim().min(1).max(120).optional().nullable(),
   headName: z.string().optional().nullable(),
   arrivalDate: z.string(),
   originArea: z.string().optional().nullable(),
@@ -191,6 +198,8 @@ householdsRouter.post(
   asyncHandler(async (req, res) => {
     const payload = req.body as HouseholdPayload;
     const memberSummary = summarizeMembers(payload.members);
+    const normalizedHeadName =
+      (payload.headName ? payload.headName.trim() : `${payload.firstName} ${payload.lastName}`.trim()) || null;
 
     let resolvedZoneId = payload.zoneId ?? null;
     const snapped =
@@ -218,7 +227,14 @@ householdsRouter.post(
         prisma.household.create({
           data: {
             householdCode,
-            headName: payload.headName ?? null,
+            firstName: payload.firstName,
+            lastName: payload.lastName,
+            fatherName: payload.fatherName,
+            motherName: payload.motherName,
+            civilIdentityNumber: payload.civilIdentityNumber,
+            phoneNumber: payload.phoneNumber,
+            pinLabel: payload.pinLabel ?? null,
+            headName: normalizedHeadName,
             arrivalDate: new Date(payload.arrivalDate),
             originArea: payload.originArea ?? null,
             zoneId: resolvedZoneId,
@@ -301,6 +317,15 @@ householdsRouter.patch(
   validateBody(householdPatchSchema),
   asyncHandler(async (req, res) => {
     const payload = req.body as z.infer<typeof householdPatchSchema>;
+    const existing = await prisma.household.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, firstName: true, lastName: true }
+    });
+
+    if (!existing) {
+      return res.status(404).json({ message: "Household not found" });
+    }
+
     const members = payload.members ?? [];
     const memberSummary = payload.members ? summarizeMembers(members) : null;
 
@@ -312,6 +337,13 @@ householdsRouter.patch(
 
     const data: Record<string, unknown> = {
       ...payload,
+      firstName: payload.firstName?.trim() || undefined,
+      lastName: payload.lastName?.trim() || undefined,
+      fatherName: payload.fatherName?.trim() || undefined,
+      motherName: payload.motherName?.trim() || undefined,
+      civilIdentityNumber: payload.civilIdentityNumber?.trim() || undefined,
+      phoneNumber: payload.phoneNumber?.trim() || undefined,
+      pinLabel: payload.pinLabel === undefined ? undefined : payload.pinLabel?.trim() || null,
       headName: payload.headName ?? undefined,
       originArea: payload.originArea ?? undefined,
       notes: payload.notes ?? undefined,
@@ -346,6 +378,14 @@ householdsRouter.patch(
 
     if (payload.arrivalDate) {
       data.arrivalDate = new Date(payload.arrivalDate);
+    }
+
+    if (payload.firstName !== undefined || payload.lastName !== undefined || payload.headName !== undefined) {
+      const firstName = payload.firstName?.trim() || existing.firstName || "";
+      const lastName = payload.lastName?.trim() || existing.lastName || "";
+      const mergedHeadName =
+        payload.headName !== undefined ? payload.headName?.trim() || null : `${firstName} ${lastName}`.trim() || null;
+      data.headName = mergedHeadName;
     }
 
     if (memberSummary) {

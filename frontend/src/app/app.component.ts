@@ -14,6 +14,7 @@ import { AuthService } from "./services/auth.service";
       <span class="title">Ain El Kharroube Municipality</span>
       <a mat-button routerLink="/dashboard" routerLinkActive="active">Dashboard</a>
       <a mat-button routerLink="/households" routerLinkActive="active">Households</a>
+      <a mat-button routerLink="/cars" routerLinkActive="active">Cars</a>
       <a mat-button routerLink="/users" routerLinkActive="active" *ngIf="auth.currentUser()?.role === 'ADMIN'">Users</a>
       <span class="spacer"></span>
       <span class="user" *ngIf="auth.currentUser() as user">{{ user.fullName }} ({{ user.role }})</span>

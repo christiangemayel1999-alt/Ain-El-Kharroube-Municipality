@@ -29,6 +29,13 @@ exportsRouter.get(
     const csv = toCsv(
       [
         "householdCode",
+        "firstName",
+        "lastName",
+        "fatherName",
+        "motherName",
+        "civilIdentityNumber",
+        "phoneNumber",
+        "pinLabel",
         "zoneCode",
         "zoneName",
         "arrivalDate",
@@ -51,6 +58,13 @@ exportsRouter.get(
       ],
       households.map((h) => [
         h.householdCode,
+        h.firstName,
+        h.lastName,
+        h.fatherName,
+        h.motherName,
+        h.civilIdentityNumber,
+        h.phoneNumber,
+        h.pinLabel,
         h.zone.code,
         h.zone.name,
         h.arrivalDate.toISOString().slice(0, 10),

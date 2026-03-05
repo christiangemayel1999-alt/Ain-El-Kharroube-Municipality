@@ -49,6 +49,13 @@ async function main() {
   const household = await prisma.household.upsert({
     where: { householdCode: "HH-00001" },
     update: {
+      firstName: "Sample",
+      lastName: "Head",
+      fatherName: "Father Sample",
+      motherName: "Mother Sample",
+      civilIdentityNumber: "CID-00001",
+      phoneNumber: "+96170000001",
+      pinLabel: "Center-Alpha",
       headName: "Sample Head",
       arrivalDate: new Date("2026-02-25"),
       originArea: "Demo Origin",
@@ -88,6 +95,13 @@ async function main() {
     },
     create: {
       householdCode: "HH-00001",
+      firstName: "Sample",
+      lastName: "Head",
+      fatherName: "Father Sample",
+      motherName: "Mother Sample",
+      civilIdentityNumber: "CID-00001",
+      phoneNumber: "+96170000001",
+      pinLabel: "Center-Alpha",
       headName: "Sample Head",
       arrivalDate: new Date("2026-02-25"),
       originArea: "Demo Origin",
