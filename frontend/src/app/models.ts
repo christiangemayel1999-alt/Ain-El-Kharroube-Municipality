@@ -18,6 +18,14 @@ export interface HouseholdMember {
   name: string;
   age: number;
   gender: "MALE" | "FEMALE";
+  firstName?: string;
+  lastName?: string;
+  fatherName?: string;
+  motherName?: string;
+  civilIdentityNumber?: string;
+  phoneNumber?: string;
+  originArea?: string;
+  nationality?: string;
   relationshipToHead?: string | null;
   dateOfBirth?: string | null;
   yearOfBirth?: number | null;
@@ -29,6 +37,10 @@ export interface HouseholdMember {
   pregnantOrLactating?: boolean;
   schoolEnrollment?: "ENROLLED" | "NOT_ENROLLED" | "NA";
   employmentStatus?: "EMPLOYED" | "UNEMPLOYED" | "NA";
+  hasCar?: boolean;
+  carModel?: string | null;
+  carColor?: string | null;
+  carPlate?: string | null;
 }
 
 export interface Household {

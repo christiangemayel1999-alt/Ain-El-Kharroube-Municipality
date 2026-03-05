@@ -29,6 +29,31 @@ type HoveredPolicePoint = {
   planName: string;
 };
 
+type ReportZoneRow = {
+  zone: string;
+  households: number;
+  individuals: number;
+  avgFamilySize: number;
+  populationSharePct: number;
+};
+
+type ReportVm = {
+  generatedAt: string;
+  totalHouseholds: number;
+  totalIndividuals: number;
+  averageFamilySize: number;
+  pendingChecks: number;
+  pendingChecksPct: number;
+  checkedSafePct: number;
+  highPriorityCases: number;
+  highPriorityPct: number;
+  householdsWithCars: number;
+  householdsWithCarsPct: number;
+  topNeed: string | null;
+  topZoneByIndividuals: string | null;
+  zoneRows: ReportZoneRow[];
+};
+
 @Component({
   selector: "app-dashboard-page",
   standalone: true,
@@ -112,38 +137,15 @@ type HoveredPolicePoint = {
 
             <section class="drawer-section">
               <h3>2. Household details</h3>
-              <div class="coord-grid">
-                <mat-form-field appearance="outline">
-                  <mat-label>First name</mat-label>
-                  <input matInput formControlName="firstName" />
-                </mat-form-field>
-                <mat-form-field appearance="outline">
-                  <mat-label>Last name</mat-label>
-                  <input matInput formControlName="lastName" />
-                </mat-form-field>
-              </div>
+              <mat-form-field appearance="outline">
+                <mat-label>Household full name</mat-label>
+                <input matInput formControlName="headName" />
+              </mat-form-field>
 
-              <div class="coord-grid">
-                <mat-form-field appearance="outline">
-                  <mat-label>Father name</mat-label>
-                  <input matInput formControlName="fatherName" />
-                </mat-form-field>
-                <mat-form-field appearance="outline">
-                  <mat-label>Mother name</mat-label>
-                  <input matInput formControlName="motherName" />
-                </mat-form-field>
-              </div>
-
-              <div class="coord-grid">
-                <mat-form-field appearance="outline">
-                  <mat-label>Civil identity number</mat-label>
-                  <input matInput formControlName="civilIdentityNumber" />
-                </mat-form-field>
-                <mat-form-field appearance="outline">
-                  <mat-label>Phone number</mat-label>
-                  <input matInput formControlName="phoneNumber" />
-                </mat-form-field>
-              </div>
+              <mat-form-field appearance="outline">
+                <mat-label>Phone number</mat-label>
+                <input matInput formControlName="phoneNumber" />
+              </mat-form-field>
 
               <mat-form-field appearance="outline">
                 <mat-label>Map pin label</mat-label>
@@ -151,27 +153,8 @@ type HoveredPolicePoint = {
               </mat-form-field>
 
               <mat-form-field appearance="outline">
-                <mat-label>Family origin area (within country)</mat-label>
-                <input matInput formControlName="originArea" />
-              </mat-form-field>
-
-              <mat-form-field appearance="outline">
-                <mat-label>Nationality</mat-label>
-                <input matInput formControlName="nationality" />
-              </mat-form-field>
-
-              <mat-form-field appearance="outline">
                 <mat-label>Preferred language</mat-label>
                 <input matInput formControlName="preferredLanguage" />
-              </mat-form-field>
-
-              <mat-form-field appearance="outline">
-                <mat-label>Case priority</mat-label>
-                <mat-select formControlName="casePriority">
-                  <mat-option value="LOW">LOW</mat-option>
-                  <mat-option value="MEDIUM">MEDIUM</mat-option>
-                  <mat-option value="HIGH">HIGH</mat-option>
-                </mat-select>
               </mat-form-field>
 
               <mat-form-field appearance="outline">
@@ -190,36 +173,6 @@ type HoveredPolicePoint = {
                   <mat-option value="PENDING">NOT CHECKED (PENDING)</mat-option>
                   <mat-option value="CHECKED_SAFE">CHECKED AND SAFE</mat-option>
                 </mat-select>
-              </mat-form-field>
-
-              <mat-form-field appearance="outline">
-                <mat-label>Has car?</mat-label>
-                <mat-select formControlName="hasCar">
-                  <mat-option [value]="false">No</mat-option>
-                  <mat-option [value]="true">Yes</mat-option>
-                </mat-select>
-              </mat-form-field>
-
-              <div class="car-grid" *ngIf="hasCarSelected()">
-                <mat-form-field appearance="outline">
-                  <mat-label>Car model</mat-label>
-                  <input matInput formControlName="carModel" />
-                </mat-form-field>
-
-                <mat-form-field appearance="outline">
-                  <mat-label>Car color</mat-label>
-                  <input matInput formControlName="carColor" />
-                </mat-form-field>
-
-                <mat-form-field appearance="outline">
-                  <mat-label>Car number</mat-label>
-                  <input matInput formControlName="carPlate" />
-                </mat-form-field>
-              </div>
-
-              <mat-form-field appearance="outline">
-                <mat-label>Needs (comma-separated)</mat-label>
-                <input matInput formControlName="needsText" />
               </mat-form-field>
 
               <mat-form-field appearance="outline">
@@ -246,131 +199,170 @@ type HoveredPolicePoint = {
                   <input matInput formControlName="emergencyRelation" />
                 </mat-form-field>
               </div>
-
-              <div *ngIf="canManageContacts()" class="contact-block">
-                <h4>Contact details</h4>
-                <div class="coord-grid">
-                  <mat-form-field appearance="outline">
-                    <mat-label>Phone</mat-label>
-                    <input matInput formControlName="contactPhone" />
-                  </mat-form-field>
-
-                  <mat-form-field appearance="outline">
-                    <mat-label>WhatsApp</mat-label>
-                    <input matInput formControlName="contactWhatsapp" />
-                  </mat-form-field>
-                </div>
-
-                <mat-form-field appearance="outline">
-                  <mat-label>Contact consent</mat-label>
-                  <mat-select formControlName="contactConsent">
-                    <mat-option [value]="false">No</mat-option>
-                    <mat-option [value]="true">Yes</mat-option>
-                  </mat-select>
-                </mat-form-field>
-              </div>
             </section>
 
             <section class="drawer-section" formArrayName="members">
               <h3>3. Family members</h3>
-              <p class="muted">Enter each person name and age.</p>
+              <p class="muted">Enter full member identity details for each person.</p>
 
-              <div class="member-row" *ngFor="let member of membersArray.controls; let i = index" [formGroupName]="i">
-                <mat-form-field appearance="outline">
-                  <mat-label>Name {{ i + 1 }}</mat-label>
-                  <input matInput formControlName="name" />
-                </mat-form-field>
-
-                <mat-form-field appearance="outline">
-                  <mat-label>Relation to head</mat-label>
-                  <input matInput formControlName="relationshipToHead" />
-                </mat-form-field>
-
-                <mat-form-field appearance="outline">
-                  <mat-label>Gender</mat-label>
-                  <mat-select formControlName="gender">
-                    <mat-option value="MALE">Male</mat-option>
-                    <mat-option value="FEMALE">Female</mat-option>
-                  </mat-select>
-                </mat-form-field>
-
-                <mat-form-field appearance="outline">
-                  <mat-label>Age</mat-label>
-                  <input matInput type="number" formControlName="age" />
-                </mat-form-field>
-
-                <button mat-stroked-button type="button" (click)="removeMember(i)" [disabled]="membersArray.length <= 1">
-                  Remove
-                </button>
-              </div>
-
-              <div class="member-extra-row" *ngFor="let member of membersArray.controls; let i = index" [formGroupName]="i">
-                <div class="member-extra-grid">
+              <div class="member-card" *ngFor="let member of membersArray.controls; let i = index" [formGroupName]="i">
+                <div class="member-row">
                   <mat-form-field appearance="outline">
-                    <mat-label>Year of birth</mat-label>
-                    <input matInput type="number" formControlName="yearOfBirth" />
+                    <mat-label>First name {{ i + 1 }}</mat-label>
+                    <input matInput formControlName="firstName" />
                   </mat-form-field>
 
                   <mat-form-field appearance="outline">
-                    <mat-label>ID status</mat-label>
-                    <mat-select formControlName="idDocStatus">
-                      <mat-option value="UNKNOWN">UNKNOWN</mat-option>
-                      <mat-option value="HAS_ID">HAS ID</mat-option>
-                      <mat-option value="NO_ID">NO ID</mat-option>
+                    <mat-label>Last name</mat-label>
+                    <input matInput formControlName="lastName" />
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Gender</mat-label>
+                    <mat-select formControlName="gender">
+                      <mat-option value="MALE">Male</mat-option>
+                      <mat-option value="FEMALE">Female</mat-option>
                     </mat-select>
                   </mat-form-field>
 
                   <mat-form-field appearance="outline">
-                    <mat-label>ID type</mat-label>
-                    <input matInput formControlName="idDocType" />
+                    <mat-label>Age</mat-label>
+                    <input matInput type="number" formControlName="age" />
                   </mat-form-field>
 
-                  <mat-form-field appearance="outline">
-                    <mat-label>ID last 4</mat-label>
-                    <input matInput formControlName="idDocLast4" />
-                  </mat-form-field>
+                  <button mat-stroked-button type="button" (click)="removeMember(i)" [disabled]="membersArray.length <= 1">
+                    Remove
+                  </button>
+                </div>
 
-                  <mat-form-field appearance="outline">
-                    <mat-label>School enrollment</mat-label>
-                    <mat-select formControlName="schoolEnrollment">
-                      <mat-option value="ENROLLED">ENROLLED</mat-option>
-                      <mat-option value="NOT_ENROLLED">NOT_ENROLLED</mat-option>
-                      <mat-option value="NA">N/A</mat-option>
-                    </mat-select>
-                  </mat-form-field>
+                <div class="member-extra-row">
+                  <div class="member-extra-grid">
+                    <mat-form-field appearance="outline">
+                      <mat-label>Father name</mat-label>
+                      <input matInput formControlName="fatherName" />
+                    </mat-form-field>
 
-                  <mat-form-field appearance="outline">
-                    <mat-label>Employment</mat-label>
-                    <mat-select formControlName="employmentStatus">
-                      <mat-option value="EMPLOYED">EMPLOYED</mat-option>
-                      <mat-option value="UNEMPLOYED">UNEMPLOYED</mat-option>
-                      <mat-option value="NA">N/A</mat-option>
-                    </mat-select>
-                  </mat-form-field>
+                    <mat-form-field appearance="outline">
+                      <mat-label>Mother name</mat-label>
+                      <input matInput formControlName="motherName" />
+                    </mat-form-field>
 
-                  <mat-form-field appearance="outline">
-                    <mat-label>Disability</mat-label>
-                    <mat-select formControlName="hasDisability">
-                      <mat-option [value]="false">No</mat-option>
-                      <mat-option [value]="true">Yes</mat-option>
-                    </mat-select>
-                  </mat-form-field>
+                    <mat-form-field appearance="outline">
+                      <mat-label>Civil identity number</mat-label>
+                      <input matInput formControlName="civilIdentityNumber" />
+                    </mat-form-field>
 
-                  <mat-form-field appearance="outline">
-                    <mat-label>Chronic condition</mat-label>
-                    <mat-select formControlName="hasChronicCondition">
-                      <mat-option [value]="false">No</mat-option>
-                      <mat-option [value]="true">Yes</mat-option>
-                    </mat-select>
-                  </mat-form-field>
+                    <mat-form-field appearance="outline">
+                      <mat-label>Phone number</mat-label>
+                      <input matInput formControlName="phoneNumber" />
+                    </mat-form-field>
 
-                  <mat-form-field appearance="outline">
-                    <mat-label>Pregnant / lactating</mat-label>
-                    <mat-select formControlName="pregnantOrLactating">
-                      <mat-option [value]="false">No</mat-option>
-                      <mat-option [value]="true">Yes</mat-option>
-                    </mat-select>
-                  </mat-form-field>
+                    <mat-form-field appearance="outline">
+                      <mat-label>Origin area</mat-label>
+                      <input matInput formControlName="originArea" />
+                    </mat-form-field>
+
+                    <mat-form-field appearance="outline">
+                      <mat-label>Nationality</mat-label>
+                      <input matInput formControlName="nationality" />
+                    </mat-form-field>
+
+                    <mat-form-field appearance="outline">
+                      <mat-label>Relation to head</mat-label>
+                      <input matInput formControlName="relationshipToHead" />
+                    </mat-form-field>
+
+                    <mat-form-field appearance="outline">
+                      <mat-label>Has car?</mat-label>
+                      <mat-select formControlName="hasCar">
+                        <mat-option [value]="false">No</mat-option>
+                        <mat-option [value]="true">Yes</mat-option>
+                      </mat-select>
+                    </mat-form-field>
+
+                    <div class="member-car-grid" *ngIf="member.get('hasCar')?.value">
+                      <mat-form-field appearance="outline">
+                        <mat-label>Car model</mat-label>
+                        <input matInput formControlName="carModel" />
+                      </mat-form-field>
+
+                      <mat-form-field appearance="outline">
+                        <mat-label>Car color</mat-label>
+                        <input matInput formControlName="carColor" />
+                      </mat-form-field>
+
+                      <mat-form-field appearance="outline">
+                        <mat-label>Car number</mat-label>
+                        <input matInput formControlName="carPlate" />
+                      </mat-form-field>
+                    </div>
+
+                    <mat-form-field appearance="outline">
+                      <mat-label>Year of birth</mat-label>
+                      <input matInput type="number" formControlName="yearOfBirth" />
+                    </mat-form-field>
+
+                    <mat-form-field appearance="outline">
+                      <mat-label>ID status</mat-label>
+                      <mat-select formControlName="idDocStatus">
+                        <mat-option value="UNKNOWN">UNKNOWN</mat-option>
+                        <mat-option value="HAS_ID">HAS ID</mat-option>
+                        <mat-option value="NO_ID">NO ID</mat-option>
+                      </mat-select>
+                    </mat-form-field>
+
+                    <mat-form-field appearance="outline">
+                      <mat-label>ID type</mat-label>
+                      <input matInput formControlName="idDocType" />
+                    </mat-form-field>
+
+                    <mat-form-field appearance="outline">
+                      <mat-label>ID last 4</mat-label>
+                      <input matInput formControlName="idDocLast4" />
+                    </mat-form-field>
+
+                    <mat-form-field appearance="outline">
+                      <mat-label>School enrollment</mat-label>
+                      <mat-select formControlName="schoolEnrollment">
+                        <mat-option value="ENROLLED">ENROLLED</mat-option>
+                        <mat-option value="NOT_ENROLLED">NOT_ENROLLED</mat-option>
+                        <mat-option value="NA">N/A</mat-option>
+                      </mat-select>
+                    </mat-form-field>
+
+                    <mat-form-field appearance="outline">
+                      <mat-label>Employment</mat-label>
+                      <mat-select formControlName="employmentStatus">
+                        <mat-option value="EMPLOYED">EMPLOYED</mat-option>
+                        <mat-option value="UNEMPLOYED">UNEMPLOYED</mat-option>
+                        <mat-option value="NA">N/A</mat-option>
+                      </mat-select>
+                    </mat-form-field>
+
+                    <mat-form-field appearance="outline">
+                      <mat-label>Disability</mat-label>
+                      <mat-select formControlName="hasDisability">
+                        <mat-option [value]="false">No</mat-option>
+                        <mat-option [value]="true">Yes</mat-option>
+                      </mat-select>
+                    </mat-form-field>
+
+                    <mat-form-field appearance="outline">
+                      <mat-label>Chronic condition</mat-label>
+                      <mat-select formControlName="hasChronicCondition">
+                        <mat-option [value]="false">No</mat-option>
+                        <mat-option [value]="true">Yes</mat-option>
+                      </mat-select>
+                    </mat-form-field>
+
+                    <mat-form-field appearance="outline">
+                      <mat-label>Pregnant / lactating</mat-label>
+                      <mat-select formControlName="pregnantOrLactating">
+                        <mat-option [value]="false">No</mat-option>
+                        <mat-option [value]="true">Yes</mat-option>
+                      </mat-select>
+                    </mat-form-field>
+                  </div>
                 </div>
               </div>
 
@@ -415,6 +407,15 @@ type HoveredPolicePoint = {
               </div>
               <div id="dashboard-map"></div>
               <p class="muted">Satellite view centered on Ain El Kharroube (33.93444, 35.69972)</p>
+              <div class="overlay-toggles">
+                <mat-slide-toggle [checked]="heatmapEnabled()" (change)="setHeatmapEnabled($event.checked)">
+                  Heat map
+                </mat-slide-toggle>
+                <mat-slide-toggle [checked]="zoneGuidesEnabled()" (change)="setZoneGuidesEnabled($event.checked)">
+                  Zone guide lines
+                </mat-slide-toggle>
+              </div>
+              <p class="muted">Heat map shows household density and priority. Zone lines are visual guides for Section 1..10.</p>
               <p class="muted" *ngIf="borderDrawing()">
                 Border drawing mode is active: click map points around the village, then press "Finish Border".
                 Points: {{ borderPointsCount() }}
@@ -426,8 +427,13 @@ type HoveredPolicePoint = {
               <p class="success-text" *ngIf="saveSuccess()">{{ saveSuccess() }}</p>
               <p class="success-text" *ngIf="emergencySuccess()">{{ emergencySuccess() }}</p>
               <p class="error-text" *ngIf="emergencyError()">{{ emergencyError() }}</p>
-              <mat-card class="hover-family-card" *ngIf="hoveredMarker() as marker">
-                <h3>Family at hovered pin</h3>
+              <mat-card class="hover-family-card" *ngIf="activeMapMarker() as marker">
+                <div class="card-title-row">
+                  <h3>{{ selectedMarker()?.id === marker.id ? 'Family at selected pin' : 'Family at hovered pin' }}</h3>
+                  <button mat-button type="button" *ngIf="selectedMarker()?.id === marker.id" (click)="clearSelectedMarker()">
+                    Clear pin
+                  </button>
+                </div>
                 <p><strong>Label:</strong> {{ marker.pinLabel || "-" }}</p>
                 <p><strong>Code:</strong> {{ marker.householdCode }}</p>
                 <p><strong>Name:</strong> {{ marker.firstName || "-" }} {{ marker.lastName || "" }}</p>
@@ -450,8 +456,6 @@ type HoveredPolicePoint = {
                 </p>
                 <p><strong>Has car:</strong> {{ marker.hasCar ? 'Yes' : 'No' }}</p>
                 <p *ngIf="marker.hasCar"><strong>Car:</strong> {{ marker.carModel || '-' }} | {{ marker.carColor || '-' }} | {{ marker.carPlate || '-' }}</p>
-                <p><strong>Case priority:</strong> {{ marker.casePriority }}</p>
-                <p><strong>Needs:</strong> {{ formatNeeds(marker.needs) }}</p>
                 <p><strong>Pin precision:</strong> {{ marker.pinPrecisionM === 0 ? 'Exact' : '+/-' + marker.pinPrecisionM + 'm' }}</p>
               </mat-card>
               <mat-card class="hover-family-card" *ngIf="hoveredPolicePoint() as post">
@@ -625,6 +629,71 @@ type HoveredPolicePoint = {
                     <td [ngClass]="safetyClass(h.safetyCheckStatus)">
                       {{ h.safetyCheckStatus === 'CHECKED_SAFE' ? 'Checked and safe' : 'Not checked (pending)' }}
                     </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </mat-card>
+
+          <mat-card class="report-card" *ngIf="reportVm() as report">
+            <div class="report-header">
+              <div>
+                <h3>Executive Report</h3>
+                <p class="muted">Generated: {{ report.generatedAt | date:'yyyy-MM-dd HH:mm' }} | Scope: active households</p>
+              </div>
+              <div class="button-row left">
+                <button mat-stroked-button type="button" (click)="downloadOperationsReportWorkbook()">Export Excel (2 sheets)</button>
+                <button mat-button type="button" (click)="printExecutiveReport()">Print</button>
+              </div>
+            </div>
+
+            <div class="report-metrics">
+              <div class="metric-tile">
+                <span>Average family size</span>
+                <strong>{{ report.averageFamilySize | number:'1.1-2' }}</strong>
+              </div>
+              <div class="metric-tile">
+                <span>Checked safe</span>
+                <strong>{{ report.checkedSafePct | number:'1.0-1' }}%</strong>
+              </div>
+              <div class="metric-tile">
+                <span>Pending checks</span>
+                <strong>{{ report.pendingChecks }} ({{ report.pendingChecksPct | number:'1.0-1' }}%)</strong>
+              </div>
+              <div class="metric-tile">
+                <span>High priority cases</span>
+                <strong>{{ report.highPriorityCases }} ({{ report.highPriorityPct | number:'1.0-1' }}%)</strong>
+              </div>
+              <div class="metric-tile">
+                <span>Households with cars</span>
+                <strong>{{ report.householdsWithCars }} ({{ report.householdsWithCarsPct | number:'1.0-1' }}%)</strong>
+              </div>
+              <div class="metric-tile">
+                <span>Top zone by individuals</span>
+                <strong>{{ report.topZoneByIndividuals || '-' }}</strong>
+              </div>
+            </div>
+
+            <p class="muted">Top need reported: <strong>{{ report.topNeed || '-' }}</strong></p>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Zone</th>
+                    <th>Households</th>
+                    <th>Individuals</th>
+                    <th>Avg family size</th>
+                    <th>Population share</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr *ngFor="let row of report.zoneRows">
+                    <td>{{ row.zone }}</td>
+                    <td>{{ row.households }}</td>
+                    <td>{{ row.individuals }}</td>
+                    <td>{{ row.avgFamilySize | number:'1.1-2' }}</td>
+                    <td>{{ row.populationSharePct | number:'1.0-1' }}%</td>
                   </tr>
                 </tbody>
               </table>
@@ -808,14 +877,29 @@ type HoveredPolicePoint = {
         align-items: start;
       }
 
+      .member-card {
+        border: 1px solid #dbe5e2;
+        border-radius: 0.6rem;
+        background: #fcfffe;
+        padding: 0.7rem;
+        margin-bottom: 0.6rem;
+      }
+
       .member-extra-row {
-        margin-top: -0.25rem;
+        margin-top: 0.2rem;
       }
 
       .member-extra-grid {
         display: grid;
         gap: 0.5rem;
         grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .member-car-grid {
+        display: grid;
+        gap: 0.5rem;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-column: 1 / -1;
       }
 
       .location-input-block {
@@ -866,6 +950,13 @@ type HoveredPolicePoint = {
         color: #555;
       }
 
+      .overlay-toggles {
+        margin-top: 0.5rem;
+        display: flex;
+        gap: 1rem;
+        flex-wrap: wrap;
+      }
+
       .picked {
         margin-top: 0.5rem;
         color: #1c7d4d;
@@ -914,6 +1005,51 @@ type HoveredPolicePoint = {
         overflow-x: auto;
       }
 
+      .report-card {
+        display: grid;
+        gap: 0.85rem;
+      }
+
+      .report-header {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.75rem;
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+
+      .report-header h3 {
+        margin: 0;
+      }
+
+      .report-header p {
+        margin: 0.25rem 0 0;
+      }
+
+      .report-metrics {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.65rem;
+      }
+
+      .metric-tile {
+        padding: 0.75rem;
+        border: 1px solid #d6e0e7;
+        border-radius: 0.5rem;
+        background: #f8fafc;
+        display: grid;
+        gap: 0.25rem;
+      }
+
+      .metric-tile span {
+        font-size: 0.8rem;
+        color: #475569;
+      }
+
+      .metric-tile strong {
+        font-size: 1.05rem;
+      }
+
       table {
         width: 100%;
         border-collapse: collapse;
@@ -937,7 +1073,8 @@ type HoveredPolicePoint = {
         .coord-grid,
         .car-grid,
         .member-row,
-        .member-extra-grid {
+        .member-extra-grid,
+        .member-car-grid {
           grid-template-columns: 1fr;
         }
 
@@ -946,12 +1083,21 @@ type HoveredPolicePoint = {
           align-items: stretch;
         }
 
+        .overlay-toggles {
+          flex-direction: column;
+          gap: 0.35rem;
+        }
+
         .chart-card {
           min-height: 300px;
         }
 
         .chart-wrap {
           height: 220px;
+        }
+
+        .report-metrics {
+          grid-template-columns: 1fr;
         }
       }
     `
@@ -971,6 +1117,7 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
   readonly saveError = signal<string | null>(null);
   readonly saveSuccess = signal<string | null>(null);
   readonly hoveredMarker = signal<MapMarker | null>(null);
+  readonly selectedMarker = signal<MapMarker | null>(null);
   readonly hoveredPolicePoint = signal<HoveredPolicePoint | null>(null);
   readonly emergencyBuilderOpen = signal(false);
   readonly emergencyOverlayEnabled = signal(true);
@@ -983,6 +1130,9 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
   readonly borderDrawing = signal(false);
   readonly borderPointsCount = signal(0);
   readonly borderMessage = signal<string | null>(null);
+  readonly heatmapEnabled = signal(true);
+  readonly zoneGuidesEnabled = signal(true);
+  readonly reportVm = signal<ReportVm | null>(null);
 
   householdsByZoneChart: ChartData<"bar"> = { labels: [], datasets: [{ data: [], label: "Households" }] };
   individualsByZoneChart: ChartData<"bar"> = { labels: [], datasets: [{ data: [], label: "Individuals" }] };
@@ -998,30 +1148,15 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
     manualLat: [null as number | null],
     manualLng: [null as number | null],
     precisionMode: ["EXACT", Validators.required],
-    firstName: ["", [Validators.required, Validators.maxLength(80)]],
-    lastName: ["", [Validators.required, Validators.maxLength(80)]],
-    fatherName: ["", [Validators.required, Validators.maxLength(80)]],
-    motherName: ["", [Validators.required, Validators.maxLength(80)]],
-    civilIdentityNumber: ["", [Validators.required, Validators.maxLength(40)]],
+    headName: ["", [Validators.required, Validators.maxLength(160)]],
     phoneNumber: ["", [Validators.required, Validators.maxLength(40)]],
     pinLabel: ["", [Validators.maxLength(120)]],
-    originArea: ["", [Validators.required, Validators.maxLength(160)]],
-    nationality: ["Lebanese"],
     preferredLanguage: ["Arabic"],
-    casePriority: ["MEDIUM", Validators.required],
     emergencyName: [""],
     emergencyPhone: [""],
     emergencyRelation: [""],
     housingType: ["HOST", Validators.required],
     safetyCheckStatus: ["PENDING", Validators.required],
-    hasCar: [false, Validators.required],
-    carModel: [""],
-    carColor: [""],
-    carPlate: [""],
-    contactPhone: [""],
-    contactWhatsapp: [""],
-    contactConsent: [false],
-    needsText: [""],
     arrivalDate: [new Date().toISOString().slice(0, 10), Validators.required],
     members: this.fb.array([this.createMemberGroup()], Validators.minLength(1))
   });
@@ -1035,11 +1170,15 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
 
   private map?: L.Map;
   private markerLayer = L.layerGroup();
+  private heatLayer = L.layerGroup();
   private tempLayer = L.layerGroup();
   private emergencyLayer = L.layerGroup();
   private villageBorderLayer = L.layerGroup();
+  private zoneGuidesLayer = L.layerGroup();
   private emergencyPickMode: { index: number } | null = null;
   private villageBorderPoints: L.LatLngTuple[] = [];
+  private readonly mapCenter: L.LatLngTuple = [33.93444, 35.69972];
+  private readonly sectionCount = 10;
   private readonly borderStorageKey = "ain_el_kharroube_manual_border_points_v1";
   private resizeHandler = () => this.map?.invalidateSize();
 
@@ -1131,7 +1270,14 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
     const form = this.arrivalForm.getRawValue();
     const members = this.membersArray.controls
       .map((control) => {
-        const name = String(control.get("name")?.value ?? "").trim();
+        const firstName = String(control.get("firstName")?.value ?? "").trim();
+        const lastName = String(control.get("lastName")?.value ?? "").trim();
+        const fatherName = String(control.get("fatherName")?.value ?? "").trim();
+        const motherName = String(control.get("motherName")?.value ?? "").trim();
+        const civilIdentityNumber = String(control.get("civilIdentityNumber")?.value ?? "").trim();
+        const phoneNumber = String(control.get("phoneNumber")?.value ?? "").trim();
+        const originArea = String(control.get("originArea")?.value ?? "").trim();
+        const nationality = String(control.get("nationality")?.value ?? "").trim();
         const age = Number(control.get("age")?.value);
         const gender = String(control.get("gender")?.value ?? "") as "MALE" | "FEMALE";
         const relationshipToHead = String(control.get("relationshipToHead")?.value ?? "").trim();
@@ -1145,8 +1291,20 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
         const hasDisability = !!control.get("hasDisability")?.value;
         const hasChronicCondition = !!control.get("hasChronicCondition")?.value;
         const pregnantOrLactating = !!control.get("pregnantOrLactating")?.value;
+        const hasCar = !!control.get("hasCar")?.value;
+        const carModel = String(control.get("carModel")?.value ?? "").trim();
+        const carColor = String(control.get("carColor")?.value ?? "").trim();
+        const carPlate = String(control.get("carPlate")?.value ?? "").trim();
         return {
-          name,
+          name: `${firstName} ${lastName}`.trim(),
+          firstName,
+          lastName,
+          fatherName,
+          motherName,
+          civilIdentityNumber,
+          phoneNumber,
+          originArea,
+          nationality,
           age,
           gender,
           relationshipToHead: relationshipToHead || null,
@@ -1158,13 +1316,17 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
           employmentStatus,
           hasDisability,
           hasChronicCondition,
-          pregnantOrLactating
+          pregnantOrLactating,
+          hasCar,
+          carModel: hasCar ? carModel : null,
+          carColor: hasCar ? carColor : null,
+          carPlate: hasCar ? carPlate : null
         };
       })
       .filter((member) => member.name.length > 0 && Number.isFinite(member.age) && (member.gender === "MALE" || member.gender === "FEMALE"));
 
     if (!members.length) {
-      this.saveError.set("Please enter at least one family member with name and age.");
+      this.saveError.set("Please enter at least one family member with full details.");
       return;
     }
 
@@ -1173,40 +1335,36 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
         this.saveError.set("For members with HAS ID, ID type and last 4 digits are required.");
         return;
       }
-    }
 
-    if (form.hasCar && (!String(form.carModel ?? "").trim() || !String(form.carColor ?? "").trim() || !String(form.carPlate ?? "").trim())) {
-      this.saveError.set("Car model, car color and car number are required when family has a car.");
-      return;
+      if (member.hasCar && (!member.carModel || !member.carColor || !member.carPlate)) {
+        this.saveError.set("For members with car, car model, color and number are required.");
+        return;
+      }
     }
 
     const ageSummary = this.computeAgeBuckets(members);
-    const needs = form.needsText
-      ? form.needsText
-          .split(",")
-          .map((v) => v.trim())
-          .filter((v) => v.length > 0)
-      : [];
-
     const pinPrecisionM = this.arrivalForm.get("precisionMode")?.value === "GRID_500M" ? 500 : 0;
+    const primaryMember = members[0];
+    const firstName = primaryMember.firstName;
+    const lastName = primaryMember.lastName;
+    const headName = String(form.headName ?? "").trim() || `${firstName} ${lastName}`.trim();
+    const firstCarMember = members.find((member) => member.hasCar);
 
     this.submitting.set(true);
-    const firstName = String(form.firstName ?? "").trim();
-    const lastName = String(form.lastName ?? "").trim();
     this.api
       .post("/households", {
         firstName,
         lastName,
-        fatherName: String(form.fatherName ?? "").trim(),
-        motherName: String(form.motherName ?? "").trim(),
-        civilIdentityNumber: String(form.civilIdentityNumber ?? "").trim(),
+        fatherName: primaryMember.fatherName,
+        motherName: primaryMember.motherName,
+        civilIdentityNumber: primaryMember.civilIdentityNumber,
         phoneNumber: String(form.phoneNumber ?? "").trim(),
         pinLabel: String(form.pinLabel ?? "").trim() || null,
-        headName: `${firstName} ${lastName}`.trim(),
-        originArea: String(form.originArea ?? "").trim(),
-        nationality: String(form.nationality ?? "").trim() || null,
+        headName,
+        originArea: primaryMember.originArea,
+        nationality: primaryMember.nationality || null,
         preferredLanguage: String(form.preferredLanguage ?? "").trim() || null,
-        casePriority: form.casePriority,
+        casePriority: "MEDIUM",
         emergencyName: String(form.emergencyName ?? "").trim() || null,
         emergencyPhone: String(form.emergencyPhone ?? "").trim() || null,
         emergencyRelation: String(form.emergencyRelation ?? "").trim() || null,
@@ -1214,53 +1372,36 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
         arrivalDate: form.arrivalDate,
         housingType: form.housingType,
         safetyCheckStatus: form.safetyCheckStatus,
-        hasCar: !!form.hasCar,
-        carModel: form.hasCar ? String(form.carModel ?? "").trim() : null,
-        carColor: form.hasCar ? String(form.carColor ?? "").trim() : null,
-        carPlate: form.hasCar ? String(form.carPlate ?? "").trim() : null,
+        hasCar: !!firstCarMember,
+        carModel: firstCarMember?.carModel ?? null,
+        carColor: firstCarMember?.carColor ?? null,
+        carPlate: firstCarMember?.carPlate ?? null,
         status: "ACTIVE",
         age0_4: ageSummary.age0_4,
         age5_17: ageSummary.age5_17,
         age18_59: ageSummary.age18_59,
         age60plus: ageSummary.age60plus,
         vulnerabilityFlags: ["new_arrival"],
-        needs,
+        needs: [],
         members,
         clickedLat: selectedCoord.lat,
         clickedLng: selectedCoord.lng,
         pinPrecisionM
       })
       .subscribe({
-        next: (created: any) => {
-          const phone = String(form.contactPhone ?? "").trim();
-          const whatsapp = String(form.contactWhatsapp ?? "").trim();
-          const consent = !!form.contactConsent;
-
-          if (this.canManageContacts() && (phone || whatsapp || consent)) {
-            this.api
-              .put(`/households/${created.id}/contact`, {
-                phone: phone || null,
-                whatsapp: whatsapp || null,
-                consent
-              })
-              .subscribe({
-                next: () => this.afterSuccessfulSave(String(created.householdCode ?? "")),
-                error: () => {
-                  this.submitting.set(false);
-                  this.saveError.set("Family saved, but contact details could not be saved.");
-                }
-              });
-            return;
-          }
-
-          this.afterSuccessfulSave(String(created.householdCode ?? ""));
-        },
+        next: (created: any) => this.afterSuccessfulSave(String(created.householdCode ?? "")),
         error: (err: HttpErrorResponse) => {
           this.submitting.set(false);
           const formError =
             Array.isArray(err?.error?.issues?.formErrors) && err.error.issues.formErrors.length
               ? String(err.error.issues.formErrors[0])
               : null;
+          const fieldErrors = err?.error?.issues?.fieldErrors as Record<string, string[] | undefined> | undefined;
+          const firstFieldError = fieldErrors
+            ? Object.values(fieldErrors)
+                .flatMap((value) => (Array.isArray(value) ? value : []))
+                .find((value) => typeof value === "string" && value.trim().length > 0) ?? null
+            : null;
           const message = String(err?.error?.message ?? "").trim();
 
           if (err.status === 401) {
@@ -1270,6 +1411,11 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
 
           if (formError) {
             this.saveError.set(formError);
+            return;
+          }
+
+          if (firstFieldError) {
+            this.saveError.set(firstFieldError);
             return;
           }
 
@@ -1348,6 +1494,19 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
     if (summary) {
       this.refreshEmergencyOverlay(summary);
     }
+  }
+
+  setHeatmapEnabled(enabled: boolean) {
+    this.heatmapEnabled.set(enabled);
+    const summary = this.summary();
+    if (summary) {
+      this.refreshHeatMap(summary);
+    }
+  }
+
+  setZoneGuidesEnabled(enabled: boolean) {
+    this.zoneGuidesEnabled.set(enabled);
+    this.renderZoneGuides();
   }
 
   addPolicePost() {
@@ -1440,7 +1599,7 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
   ageSummary() {
     const members = this.membersArray.controls
       .map((control) => ({
-        name: String(control.get("name")?.value ?? "").trim(),
+        name: `${String(control.get("firstName")?.value ?? "").trim()} ${String(control.get("lastName")?.value ?? "").trim()}`.trim(),
         age: Number(control.get("age")?.value)
       }))
       .filter((member) => member.name.length > 0 && Number.isFinite(member.age));
@@ -1456,47 +1615,17 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
   }
 
   householdStepDone() {
-    const hasCar = this.hasCarSelected();
-    const carFilled =
-      !hasCar ||
-      (!!String(this.arrivalForm.get("carModel")?.value ?? "").trim() &&
-        !!String(this.arrivalForm.get("carColor")?.value ?? "").trim() &&
-        !!String(this.arrivalForm.get("carPlate")?.value ?? "").trim());
-
     return (
-      !!this.arrivalForm.get("firstName")?.valid &&
-      !!this.arrivalForm.get("lastName")?.valid &&
-      !!this.arrivalForm.get("fatherName")?.valid &&
-      !!this.arrivalForm.get("motherName")?.valid &&
-      !!this.arrivalForm.get("civilIdentityNumber")?.valid &&
+      !!this.arrivalForm.get("headName")?.valid &&
       !!this.arrivalForm.get("phoneNumber")?.valid &&
-      !!this.arrivalForm.get("originArea")?.valid &&
       !!this.arrivalForm.get("housingType")?.valid &&
-      !!this.arrivalForm.get("casePriority")?.valid &&
       !!this.arrivalForm.get("safetyCheckStatus")?.valid &&
-      !!this.arrivalForm.get("arrivalDate")?.valid &&
-      carFilled
+      !!this.arrivalForm.get("arrivalDate")?.valid
     );
   }
 
   membersStepDone() {
     return this.membersArray.length > 0 && this.membersArray.valid;
-  }
-
-  formatNeeds(needs: string[] | null | undefined) {
-    if (!needs || !needs.length) {
-      return "-";
-    }
-    return needs.join(", ");
-  }
-
-  hasCarSelected() {
-    return !!this.arrivalForm.get("hasCar")?.value;
-  }
-
-  canManageContacts() {
-    const role = this.auth.currentUser()?.role;
-    return role === "ADMIN" || role === "CASE_WORKER";
   }
 
   isPoliceUser() {
@@ -1510,6 +1639,34 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
         this.notificationError.set("Could not mark notification as read.");
       }
     });
+  }
+
+  printExecutiveReport() {
+    window.print();
+  }
+
+  downloadOperationsReportWorkbook() {
+    this.api.getBlob("/exports/operations-report.xlsx").subscribe({
+      next: (blob) => {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `operations-report-${new Date().toISOString().slice(0, 10)}.xlsx`;
+        link.click();
+        URL.revokeObjectURL(url);
+      },
+      error: () => {
+        this.saveError.set("Could not export operations workbook.");
+      }
+    });
+  }
+
+  activeMapMarker() {
+    return this.selectedMarker() ?? this.hoveredMarker();
+  }
+
+  clearSelectedMarker() {
+    this.selectedMarker.set(null);
   }
 
   selectedSectionLabel() {
@@ -1606,13 +1763,13 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
   }
 
   private sectionFromCoordinates(lat: number, lng: number) {
-    const centerLat = 33.93444;
-    const centerLng = 35.69972;
+    const centerLat = this.mapCenter[0];
+    const centerLng = this.mapCenter[1];
     const latDiff = lat - centerLat;
     const lngDiff = lng - centerLng;
     const bearing = (Math.atan2(lngDiff, latDiff) * 180) / Math.PI;
     const normalized = (bearing + 360) % 360;
-    return Math.floor(normalized / 36) + 1;
+    return Math.floor(normalized / (360 / this.sectionCount)) + 1;
   }
 
   private deferMapResize() {
@@ -1626,8 +1783,10 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
   private loadDashboard() {
     this.api.get<DashboardSummary>("/dashboard/summary").subscribe((summary) => {
       this.summary.set(summary);
+      this.reportVm.set(this.buildExecutiveReport(summary));
       this.activeEmergencyPlan.set(summary.emergencyPlan ?? null);
       this.refreshMapMarkers(summary);
+      this.refreshHeatMap(summary);
       this.refreshEmergencyOverlay(summary);
       this.updateCharts(summary);
       this.deferMapResize();
@@ -1658,7 +1817,7 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
     }
 
     this.map = L.map("dashboard-map", {
-      center: [33.93444, 35.69972],
+      center: this.mapCenter,
       zoom: 15
     });
 
@@ -1679,11 +1838,14 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
     ).addTo(this.map);
 
     this.markerLayer.addTo(this.map);
+    this.heatLayer.addTo(this.map);
     this.tempLayer.addTo(this.map);
     this.emergencyLayer.addTo(this.map);
     this.villageBorderLayer.addTo(this.map);
+    this.zoneGuidesLayer.addTo(this.map);
     this.loadBorderFromStorage();
     this.renderVillageBorder();
+    this.renderZoneGuides();
 
     this.map.on("click", (event: L.LeafletMouseEvent) => {
       if (this.borderDrawing()) {
@@ -1717,6 +1879,8 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
       this.setSelectedCoordinate(event.latlng.lat, event.latlng.lng);
       this.pickingLocation.set(false);
     });
+
+    this.map.on("zoomend moveend", () => this.renderZoneGuides());
   }
 
   private renderVillageBorder() {
@@ -1810,47 +1974,94 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
     this.markerLayer.clearLayers();
     this.hoveredMarker.set(null);
     this.hoveredPolicePoint.set(null);
+    const selectedId = this.selectedMarker()?.id ?? null;
+    let selectedFound = false;
 
-    for (const marker of summary.mapMarkers) {
+    const sortedMarkers = summary.mapMarkers
+      .slice()
+      .sort((a, b) => String(a.householdCode ?? "").localeCompare(String(b.householdCode ?? ""), undefined, { numeric: true }));
+
+    for (const [index, marker] of sortedMarkers.entries()) {
       if (marker.approxLat == null || marker.approxLng == null) {
         continue;
       }
 
       const isSafe = marker.safetyCheckStatus === "CHECKED_SAFE";
-      const circle = L.circleMarker([marker.approxLat, marker.approxLng], {
-        radius: 8,
-        color: isSafe ? "#15803d" : "#b91c1c",
-        fillColor: isSafe ? "#22c55e" : "#ef4444",
-        fillOpacity: 0.7
+      const pinNumber = index + 1;
+      const icon = this.createFamilyPinIcon(pinNumber, isSafe);
+      const pin = L.marker([marker.approxLat, marker.approxLng], {
+        icon,
+        keyboard: true
       });
 
-      circle.bindPopup(
-        `${marker.pinLabel || marker.householdCode} | ${
+      pin.bindPopup(
+        `#${pinNumber} ${marker.pinLabel || marker.householdCode} | ${
           `${marker.firstName || ""} ${marker.lastName || ""}`.trim() || marker.headName || "Unknown head"
         } | family size: ${marker.familySize} | safety: ${
           marker.safetyCheckStatus === "CHECKED_SAFE" ? "safe" : "pending"
         } | from: ${marker.originArea || "Unknown"} | ${marker.pinPrecisionM === 0 ? "exact" : `+/-${marker.pinPrecisionM}m`}`
       );
 
-      circle.on("mouseover", () => {
+      pin.on("mouseover", () => {
         this.hoveredPolicePoint.set(null);
-        this.hoveredMarker.set(marker);
-        circle.openPopup();
+        if (this.selectedMarker()?.id !== marker.id) {
+          this.hoveredMarker.set(marker);
+        }
+        pin.openPopup();
       });
 
-      circle.on("mouseout", () => {
-        if (this.hoveredMarker()?.id === marker.id) {
+      pin.on("mouseout", () => {
+        if (this.selectedMarker()?.id !== marker.id && this.hoveredMarker()?.id === marker.id) {
           this.hoveredMarker.set(null);
         }
-        circle.closePopup();
+        if (this.selectedMarker()?.id !== marker.id) {
+          pin.closePopup();
+        }
       });
 
-      circle.on("click", () => {
+      pin.on("click", () => {
+        this.selectedMarker.set(marker);
         this.hoveredMarker.set(marker);
-        circle.openPopup();
+        pin.openPopup();
       });
 
-      circle.addTo(this.markerLayer);
+      if (selectedId && marker.id === selectedId) {
+        this.selectedMarker.set(marker);
+        selectedFound = true;
+      }
+
+      pin.addTo(this.markerLayer);
+    }
+
+    if (selectedId && !selectedFound) {
+      this.selectedMarker.set(null);
+    }
+  }
+
+  private refreshHeatMap(summary: DashboardSummary) {
+    this.heatLayer.clearLayers();
+    if (!this.heatmapEnabled()) {
+      return;
+    }
+
+    for (const marker of summary.mapMarkers) {
+      if (marker.approxLat == null || marker.approxLng == null) {
+        continue;
+      }
+
+      const priorityBoost = marker.casePriority === "HIGH" ? 0.35 : marker.casePriority === "MEDIUM" ? 0.2 : 0.1;
+      const familyBoost = Math.min(0.45, marker.familySize / 24);
+      const intensity = Math.min(1, 0.2 + priorityBoost + familyBoost);
+      const radiusMeters = Math.max(120, Math.min(420, 120 + marker.familySize * 12));
+
+      L.circle([marker.approxLat, marker.approxLng], {
+        radius: radiusMeters,
+        color: this.heatColor(intensity),
+        fillColor: this.heatColor(intensity),
+        fillOpacity: 0.08 + intensity * 0.22,
+        weight: 0,
+        interactive: false
+      }).addTo(this.heatLayer);
     }
   }
 
@@ -1934,9 +2145,163 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
     };
   }
 
+  private renderZoneGuides() {
+    this.zoneGuidesLayer.clearLayers();
+    if (!this.map || !this.zoneGuidesEnabled()) {
+      return;
+    }
+
+    const center = L.latLng(this.mapCenter[0], this.mapCenter[1]);
+    const meters = this.estimateZoneGuideRadiusMeters();
+    const sectorSize = 360 / this.sectionCount;
+
+    for (let i = 0; i < this.sectionCount; i += 1) {
+      const bearing = i * sectorSize;
+      const edge = this.destinationPoint(center, meters, bearing);
+      L.polyline([center, edge], {
+        color: "#bfdbfe",
+        weight: 1.2,
+        opacity: 0.9,
+        dashArray: "4,8",
+        interactive: false
+      }).addTo(this.zoneGuidesLayer);
+
+      const labelBearing = bearing + sectorSize / 2;
+      const labelPoint = this.destinationPoint(center, meters * 0.55, labelBearing);
+      L.marker(labelPoint, {
+        interactive: false,
+        icon: L.divIcon({
+          className: "",
+          iconSize: [36, 14],
+          iconAnchor: [18, 7],
+          html: `<span style="font-size:11px;color:#dbeafe;font-weight:600;opacity:0.95;">S${i + 1}</span>`
+        })
+      }).addTo(this.zoneGuidesLayer);
+    }
+  }
+
+  private estimateZoneGuideRadiusMeters() {
+    if (!this.map) {
+      return 1300;
+    }
+
+    const bounds = this.map.getBounds();
+    const center = bounds.getCenter();
+    const northEdge = L.latLng(bounds.getNorth(), center.lng);
+    const eastEdge = L.latLng(center.lat, bounds.getEast());
+    const northDistance = center.distanceTo(northEdge);
+    const eastDistance = center.distanceTo(eastEdge);
+    return Math.max(600, Math.min(2000, Math.min(northDistance, eastDistance) * 0.95));
+  }
+
+  private destinationPoint(center: L.LatLng, distanceMeters: number, bearingDeg: number): L.LatLng {
+    const earthRadius = 6371000;
+    const angularDistance = distanceMeters / earthRadius;
+    const bearing = (bearingDeg * Math.PI) / 180;
+    const lat1 = (center.lat * Math.PI) / 180;
+    const lng1 = (center.lng * Math.PI) / 180;
+
+    const lat2 = Math.asin(
+      Math.sin(lat1) * Math.cos(angularDistance) +
+        Math.cos(lat1) * Math.sin(angularDistance) * Math.cos(bearing)
+    );
+    const lng2 =
+      lng1 +
+      Math.atan2(
+        Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(lat1),
+        Math.cos(angularDistance) - Math.sin(lat1) * Math.sin(lat2)
+      );
+
+    return L.latLng((lat2 * 180) / Math.PI, (lng2 * 180) / Math.PI);
+  }
+
+  private heatColor(intensity: number) {
+    if (intensity >= 0.75) {
+      return "#dc2626";
+    }
+    if (intensity >= 0.5) {
+      return "#f97316";
+    }
+    if (intensity >= 0.35) {
+      return "#f59e0b";
+    }
+    return "#84cc16";
+  }
+
+  private buildExecutiveReport(summary: DashboardSummary): ReportVm {
+    const households = summary.mapMarkers.length;
+    const individuals = summary.kpis.totalIndividuals;
+    const pendingChecks = summary.mapMarkers.filter((m) => m.safetyCheckStatus === "PENDING").length;
+    const checkedSafe = summary.mapMarkers.filter((m) => m.safetyCheckStatus === "CHECKED_SAFE").length;
+    const highPriorityCases = summary.mapMarkers.filter((m) => m.casePriority === "HIGH").length;
+    const householdsWithCars = summary.mapMarkers.filter((m) => m.hasCar).length;
+    const averageFamilySize = households ? individuals / households : 0;
+    const pendingChecksPct = households ? (pendingChecks / households) * 100 : 0;
+    const checkedSafePct = households ? (checkedSafe / households) * 100 : 0;
+    const highPriorityPct = households ? (highPriorityCases / households) * 100 : 0;
+    const householdsWithCarsPct = households ? (householdsWithCars / households) * 100 : 0;
+
+    const individualsByZone = new Map(summary.charts.individualsByZone.map((entry) => [entry.zone, entry.value]));
+    const totalIndividuals = Math.max(individuals, 1);
+    const zoneRows = summary.charts.householdsByZone
+      .map((entry) => {
+        const zoneIndividuals = Number(individualsByZone.get(entry.zone) ?? 0);
+        return {
+          zone: entry.zone,
+          households: entry.value,
+          individuals: zoneIndividuals,
+          avgFamilySize: entry.value ? zoneIndividuals / entry.value : 0,
+          populationSharePct: (zoneIndividuals / totalIndividuals) * 100
+        };
+      })
+      .sort((a, b) => b.individuals - a.individuals);
+
+    const topNeed = summary.charts.needsBreakdown
+      .slice()
+      .sort((a, b) => b.value - a.value)
+      .map((entry) => entry.name)[0] ?? null;
+    const topZoneByIndividuals = zoneRows[0]?.zone ?? null;
+
+    return {
+      generatedAt: new Date().toISOString(),
+      totalHouseholds: households,
+      totalIndividuals: individuals,
+      averageFamilySize,
+      pendingChecks,
+      pendingChecksPct,
+      checkedSafePct,
+      highPriorityCases,
+      highPriorityPct,
+      householdsWithCars,
+      householdsWithCarsPct,
+      topNeed,
+      topZoneByIndividuals,
+      zoneRows
+    };
+  }
+
+  private createFamilyPinIcon(pinNumber: number, isSafe: boolean) {
+    const background = isSafe ? "#15803d" : "#b91c1c";
+    const border = isSafe ? "#86efac" : "#fca5a5";
+    return L.divIcon({
+      className: "",
+      iconSize: [28, 28],
+      iconAnchor: [14, 14],
+      popupAnchor: [0, -12],
+      html: `<div style="width:28px;height:28px;border-radius:999px;background:${background};border:2px solid ${border};color:#fff;font-weight:700;font-size:12px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.35);">${pinNumber}</div>`
+    });
+  }
+
   private createMemberGroup() {
     return this.fb.group({
-      name: ["", [Validators.required, Validators.maxLength(120)]],
+      firstName: ["", [Validators.required, Validators.maxLength(80)]],
+      lastName: ["", [Validators.required, Validators.maxLength(80)]],
+      fatherName: ["", [Validators.required, Validators.maxLength(80)]],
+      motherName: ["", [Validators.required, Validators.maxLength(80)]],
+      civilIdentityNumber: ["", [Validators.required, Validators.maxLength(40)]],
+      phoneNumber: ["", [Validators.required, Validators.maxLength(40)]],
+      originArea: ["", [Validators.required, Validators.maxLength(160)]],
+      nationality: ["Lebanese", [Validators.required, Validators.maxLength(60)]],
       relationshipToHead: [""],
       gender: ["MALE", Validators.required],
       age: [0, [Validators.required, Validators.min(0), Validators.max(120)]],
@@ -1948,7 +2313,11 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
       employmentStatus: ["NA", Validators.required],
       hasDisability: [false],
       hasChronicCondition: [false],
-      pregnantOrLactating: [false]
+      pregnantOrLactating: [false],
+      hasCar: [false],
+      carModel: [""],
+      carColor: [""],
+      carPlate: [""]
     });
   }
 
@@ -1986,30 +2355,15 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
       manualLat: null,
       manualLng: null,
       precisionMode: "EXACT",
-      firstName: "",
-      lastName: "",
-      fatherName: "",
-      motherName: "",
-      civilIdentityNumber: "",
+      headName: "",
       phoneNumber: "",
       pinLabel: "",
-      originArea: "",
-      nationality: "Lebanese",
       preferredLanguage: "Arabic",
-      casePriority: "MEDIUM",
       emergencyName: "",
       emergencyPhone: "",
       emergencyRelation: "",
       housingType: "HOST",
       safetyCheckStatus: "PENDING",
-      hasCar: false,
-      carModel: "",
-      carColor: "",
-      carPlate: "",
-      contactPhone: "",
-      contactWhatsapp: "",
-      contactConsent: false,
-      needsText: "",
       arrivalDate: new Date().toISOString().slice(0, 10)
     });
     this.membersArray.clear();

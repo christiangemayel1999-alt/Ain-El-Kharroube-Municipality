@@ -11,6 +11,10 @@ export class ApiService {
     return this.http.get<T>(`${environment.apiBaseUrl}${path}`, { params });
   }
 
+  getBlob(path: string) {
+    return this.http.get(`${environment.apiBaseUrl}${path}`, { responseType: "blob" });
+  }
+
   post<T>(path: string, payload: unknown): Observable<T> {
     return this.http.post<T>(`${environment.apiBaseUrl}${path}`, payload);
   }

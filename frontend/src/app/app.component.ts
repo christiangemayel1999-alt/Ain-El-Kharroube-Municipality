@@ -11,7 +11,7 @@ import { AuthService } from "./services/auth.service";
   imports: [CommonModule, RouterOutlet, RouterLink, RouterLinkActive, MatToolbarModule, MatButtonModule],
   template: `
     <mat-toolbar color="primary" *ngIf="auth.isLoggedIn()">
-      <span class="title">Ain El Kharroube Municipality</span>
+      <span class="title">Ain El Kharroube</span>
       <a mat-button routerLink="/dashboard" routerLinkActive="active">Dashboard</a>
       <a mat-button routerLink="/households" routerLinkActive="active">Households</a>
       <a mat-button routerLink="/cars" routerLinkActive="active">Cars</a>

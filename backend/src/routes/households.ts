@@ -15,6 +15,14 @@ const householdMemberSchema = z
     name: z.string().trim().min(1).max(120),
     age: z.coerce.number().int().min(0).max(120),
     gender: z.enum(["MALE", "FEMALE"]),
+    firstName: z.string().trim().min(1).max(80),
+    lastName: z.string().trim().min(1).max(80),
+    fatherName: z.string().trim().min(1).max(80),
+    motherName: z.string().trim().min(1).max(80),
+    civilIdentityNumber: z.string().trim().min(3).max(40),
+    phoneNumber: z.string().trim().min(7).max(40),
+    originArea: z.string().trim().min(1).max(160),
+    nationality: z.string().trim().min(1).max(60),
     relationshipToHead: z.string().trim().max(50).optional().nullable(),
     dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
     yearOfBirth: z.coerce.number().int().min(1900).max(2100).optional().nullable(),
@@ -25,13 +33,24 @@ const householdMemberSchema = z
     hasChronicCondition: z.boolean().default(false),
     pregnantOrLactating: z.boolean().default(false),
     schoolEnrollment: z.enum(["ENROLLED", "NOT_ENROLLED", "NA"]).default("NA"),
-    employmentStatus: z.enum(["EMPLOYED", "UNEMPLOYED", "NA"]).default("NA")
+    employmentStatus: z.enum(["EMPLOYED", "UNEMPLOYED", "NA"]).default("NA"),
+    hasCar: z.boolean().default(false),
+    carModel: z.string().trim().max(60).optional().nullable(),
+    carColor: z.string().trim().max(40).optional().nullable(),
+    carPlate: z.string().trim().max(30).optional().nullable()
   })
   .superRefine((data, ctx) => {
     if (data.idDocStatus === "HAS_ID" && (!data.idDocType || !data.idDocLast4)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "idDocType and idDocLast4 are required when idDocStatus is HAS_ID"
+      });
+    }
+
+    if (data.hasCar && (!data.carModel || !data.carColor || !data.carPlate)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "carModel, carColor and carPlate are required when member hasCar is true"
       });
     }
   });
@@ -45,7 +64,7 @@ const householdSchemaBase = z.object({
   phoneNumber: z.string().trim().min(7).max(40),
   pinLabel: z.string().trim().min(1).max(120).optional().nullable(),
   headName: z.string().optional().nullable(),
-  arrivalDate: z.string(),
+  arrivalDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "arrivalDate must be in YYYY-MM-DD format"),
   originArea: z.string().optional().nullable(),
   zoneId: z.string().uuid().optional().nullable(),
   housingType: z.nativeEnum(HousingType),

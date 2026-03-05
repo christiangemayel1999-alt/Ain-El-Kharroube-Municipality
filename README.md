@@ -1,4 +1,4 @@
-# Ain El Kharroube Municipality MVP
+# Ain El Kharroube MVP
 
 Production-oriented MVP for managing displaced households and rental housing.
 

@@ -22,7 +22,7 @@ import { AuthService } from "../services/auth.service";
   template: `
     <div class="login-shell">
       <mat-card>
-        <h1>Municipality Access</h1>
+        <h1>Ain El Kharroube Access</h1>
         <p class="sub">Authorized staff only</p>
 
         <form [formGroup]="form" (ngSubmit)="submit()">

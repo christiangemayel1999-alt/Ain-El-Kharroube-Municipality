@@ -29,7 +29,12 @@ export function errorHandler(error: unknown, _req: Request, res: Response, _next
     }
   }
 
+  if (error instanceof Prisma.PrismaClientValidationError) {
+    return res.status(400).json({ message: "Invalid data payload for database operation" });
+  }
+
   if (error instanceof Error) {
+    console.error(error);
     return res.status(500).json({ message: "Internal server error" });
   }
 
