@@ -274,6 +274,21 @@ const importUpload = multer({
   limits: { fileSize: 15 * 1024 * 1024 }
 });
 
+const importExcelHandler = asyncHandler(async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ message: "Excel file is required (field name: file)." });
+  }
+
+  const filename = (req.file.originalname || "").toLowerCase();
+  if (!filename.endsWith(".xlsx") && !filename.endsWith(".xls")) {
+    return res.status(400).json({ message: "Only .xlsx or .xls files are supported." });
+  }
+
+  const summary = await importHouseholdsWorkbook(req.file.buffer);
+  await writeAudit(req.user!.id, "IMPORT", "HouseholdWorkbook", `rows:${summary.householdsImported}`);
+  return res.json(summary);
+});
+
 householdsRouter.get(
   "/",
   validateQuery(householdQuerySchema),
@@ -387,24 +402,27 @@ householdsRouter.post(
   })
 );
 
+householdsRouter.get(
+  "/import-excel/health",
+  requireRoles(Role.ADMIN, Role.CASE_WORKER),
+  asyncHandler(async (_req, res) => {
+    return res.json({ ok: true, route: "import-excel" });
+  })
+);
+
 householdsRouter.post(
   "/import-excel",
   requireRoles(Role.ADMIN, Role.CASE_WORKER),
   importUpload.single("file"),
-  asyncHandler(async (req, res) => {
-    if (!req.file) {
-      return res.status(400).json({ message: "Excel file is required (field name: file)." });
-    }
+  importExcelHandler
+);
 
-    const filename = (req.file.originalname || "").toLowerCase();
-    if (!filename.endsWith(".xlsx") && !filename.endsWith(".xls")) {
-      return res.status(400).json({ message: "Only .xlsx or .xls files are supported." });
-    }
-
-    const summary = await importHouseholdsWorkbook(req.file.buffer);
-    await writeAudit(req.user!.id, "IMPORT", "HouseholdWorkbook", `rows:${summary.householdsImported}`);
-    return res.json(summary);
-  })
+// Backward-compatible alias to prevent production 404 if older clients use /import.
+householdsRouter.post(
+  "/import",
+  requireRoles(Role.ADMIN, Role.CASE_WORKER),
+  importUpload.single("file"),
+  importExcelHandler
 );
 
 householdsRouter.get(

@@ -202,7 +202,7 @@ SPA deep-link refresh is enabled via `frontend/vercel.json` rewrite:
 
 ## Seed users (change passwords immediately)
 
-- `admin@municipality.local` / `ChangeMe123!`
+- `admin@municipality.local` / `<!-- ChangeMe123! -->`
 - `caseworker1@municipality.local` / `ChangeMe123!`
 - `caseworker2@municipality.local` / `ChangeMe123!`
 - `viewer@municipality.local` / `ChangeMe123!`

@@ -2,7 +2,7 @@
 echo Deploying Ain El Kharroube system...
 
 git add -A
-git commit -m "deploy update"
+git commit -m "fix production excel import route"
 git push origin deploy/hosting-ready
 
 echo.
