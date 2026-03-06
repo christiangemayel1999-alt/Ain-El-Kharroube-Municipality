@@ -33,6 +33,9 @@ import { AuthService } from "../services/auth.service";
           <h2>Households</h2>
           <div class="actions">
             <input #importFileInput type="file" accept=".xlsx,.xls" (change)="onImportFileSelected($event)" hidden />
+            <button mat-button color="primary" type="button" *ngIf="canImportExcel()" (click)="downloadImportTemplate()" [disabled]="importing() || downloadingTemplate()">
+              {{ downloadingTemplate() ? 'Downloading template...' : 'Download Template' }}
+            </button>
             <button mat-stroked-button color="primary" type="button" *ngIf="canImportExcel()" (click)="importFileInput.click()" [disabled]="importing()">
               {{ importing() ? 'Importing...' : 'Import Excel' }}
             </button>
@@ -237,6 +240,7 @@ export class HouseholdsPageComponent implements AfterViewInit {
   readonly displayedColumns = ["householdCode", "headName", "originArea", "zone", "familySize", "status", "safetyCheckStatus", "actions"];
   readonly dataSource = new MatTableDataSource<Household>([]);
   readonly importing = signal(false);
+  readonly downloadingTemplate = signal(false);
   readonly importSummary = signal<HouseholdImportSummary | null>(null);
   readonly importError = signal<string | null>(null);
   readonly deleteError = signal<string | null>(null);
@@ -340,6 +344,33 @@ export class HouseholdsPageComponent implements AfterViewInit {
         if (input) {
           input.value = "";
         }
+      }
+    });
+  }
+
+  downloadImportTemplate() {
+    if (!this.canImportExcel()) {
+      return;
+    }
+
+    this.downloadingTemplate.set(true);
+    this.importError.set(null);
+
+    this.api.getBlob("/households/import-excel/template").subscribe({
+      next: (blob) => {
+        this.downloadingTemplate.set(false);
+        const fileUrl = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = fileUrl;
+        anchor.download = "household-import-template.xlsx";
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
+        URL.revokeObjectURL(fileUrl);
+      },
+      error: (err: { error?: { message?: string } }) => {
+        this.downloadingTemplate.set(false);
+        this.importError.set(err?.error?.message || "Could not download Excel template.");
       }
     });
   }

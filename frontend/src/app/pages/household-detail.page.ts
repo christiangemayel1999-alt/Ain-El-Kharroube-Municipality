@@ -55,9 +55,6 @@ export class HouseholdDetailPageComponent implements AfterViewInit, OnDestroy {
   readonly householdForm = this.fb.group({
     firstName: [""],
     lastName: [""],
-    fatherName: [""],
-    motherName: [""],
-    civilIdentityNumber: [""],
     phoneNumber: [""],
     pinLabel: [""],
     headName: [""],
@@ -191,9 +188,6 @@ export class HouseholdDetailPageComponent implements AfterViewInit, OnDestroy {
       .patch<Household>(`/households/${this.householdId}`, {
         firstName: this.toOptionalText(form.firstName),
         lastName: this.toOptionalText(form.lastName),
-        fatherName: this.toOptionalText(form.fatherName),
-        motherName: this.toOptionalText(form.motherName),
-        civilIdentityNumber: this.toOptionalText(form.civilIdentityNumber),
         phoneNumber: this.toOptionalText(form.phoneNumber),
         pinLabel: this.toNullableText(form.pinLabel),
         headName: this.toNullableText(form.headName),
@@ -216,11 +210,11 @@ export class HouseholdDetailPageComponent implements AfterViewInit, OnDestroy {
         next: (updated) => {
           this.savingHousehold.set(false);
           this.applyHousehold(updated);
-          this.householdMessage.set("Family details updated.");
+          this.householdMessage.set("Household details updated.");
         },
         error: (err: { error?: { message?: string } }) => {
           this.savingHousehold.set(false);
-          this.householdError.set(err?.error?.message || "Could not save family details.");
+          this.householdError.set(err?.error?.message || "Could not save household details.");
         }
       });
   }
@@ -381,9 +375,6 @@ export class HouseholdDetailPageComponent implements AfterViewInit, OnDestroy {
     this.householdForm.patchValue({
       firstName: household.firstName ?? "",
       lastName: household.lastName ?? "",
-      fatherName: household.fatherName ?? "",
-      motherName: household.motherName ?? "",
-      civilIdentityNumber: household.civilIdentityNumber ?? "",
       phoneNumber: household.phoneNumber ?? "",
       pinLabel: household.pinLabel ?? "",
       headName: household.headName ?? "",

@@ -704,19 +704,26 @@ export async function importHouseholdsWorkbook(fileBuffer: Buffer) {
       );
     }
 
-    const firstMember = members[0] as Record<string, unknown> | undefined;
+    const householdFirstName = firstNonEmpty(group.rows, ["householdFirstName"]);
+    const householdLastName = firstNonEmpty(group.rows, ["householdLastName"]);
+    const householdFatherName = firstNonEmpty(group.rows, ["householdFatherName"]);
+    const householdMotherName = firstNonEmpty(group.rows, ["householdMotherName"]);
+    const householdCivilIdentityNumber = firstNonEmpty(group.rows, ["householdCivilIdentityNumber"]);
+    const householdOriginArea = firstNonEmpty(group.rows, ["householdOriginArea"]);
+    const householdNationality = firstNonEmpty(group.rows, ["householdNationality"]);
 
     const baseData: Omit<Prisma.HouseholdUncheckedCreateInput, "householdCode"> = {
-      firstName: parsedHead.firstName,
-      lastName: parsedHead.lastName,
-      fatherName: asNullableString(firstMember?.fatherName ?? null),
-      motherName: asNullableString(firstMember?.motherName ?? null),
-      civilIdentityNumber: null,
+      // Keep household fields independent from member-level identity data.
+      firstName: householdFirstName ?? parsedHead.firstName,
+      lastName: householdLastName ?? parsedHead.lastName,
+      fatherName: asNullableString(householdFatherName),
+      motherName: asNullableString(householdMotherName),
+      civilIdentityNumber: asNullableString(householdCivilIdentityNumber),
       phoneNumber: householdPhone,
       pinLabel: firstNonEmpty(group.rows, ["pinLabel", "householdHeadName"]),
       headName,
       arrivalDate,
-      originArea: asNullableString(firstMember?.originArea ?? null),
+      originArea: asNullableString(householdOriginArea),
       zoneId,
       housingType: parseHousingType(firstNonEmpty(group.rows, ["housingType"])),
       familySize,
@@ -731,7 +738,7 @@ export async function importHouseholdsWorkbook(fileBuffer: Buffer) {
       members: members as Prisma.InputJsonValue,
       safetyCheckStatus: familySafetyStatus,
       casePriority: parseCasePriority(firstNonEmpty(group.rows, ["casePriority"])),
-      nationality: asNullableString(firstMember?.nationality ?? null),
+      nationality: asNullableString(householdNationality),
       preferredLanguage: firstNonEmpty(group.rows, ["preferredLanguage"]),
       emergencyName: firstNonEmpty(group.rows, ["emergencyName"]),
       emergencyPhone: firstNonEmpty(group.rows, ["emergencyPhone"]),

@@ -21,18 +21,20 @@
     <mat-tab-group>
       <mat-tab label="Overview">
         <div class="tab-content">
+          <h3>Household details</h3>
+          <p><strong>Head of household:</strong> {{ h.headName || "-" }}</p>
+          <p><strong>First name:</strong> {{ h.firstName || "-" }}</p>
+          <p><strong>Last name:</strong> {{ h.lastName || "-" }}</p>
+          <p><strong>Phone number:</strong> {{ h.phoneNumber || "-" }}</p>
           <p><strong>Map pin:</strong> {{ h.approxLat ?? "-" }}, {{ h.approxLng ?? "-" }} ({{ h.pinPrecisionM === 0 ? "Exact" : "+/-" + h.pinPrecisionM + "m" }})</p>
           <p><strong>Pin label:</strong> {{ h.pinLabel || "-" }}</p>
-          <p><strong>First / Last name:</strong> {{ h.firstName || "-" }} {{ h.lastName || "" }}</p>
-          <p><strong>Father / Mother:</strong> {{ h.fatherName || "-" }} / {{ h.motherName || "-" }}</p>
-          <p><strong>Civil identity number:</strong> {{ h.civilIdentityNumber || "-" }}</p>
-          <p><strong>Phone number:</strong> {{ h.phoneNumber || "-" }}</p>
           <p [ngClass]="h.safetyCheckStatus === 'CHECKED_SAFE' ? 'status-safe' : 'status-pending'">
             <strong>Safety check:</strong> {{ h.safetyCheckStatus === "CHECKED_SAFE" ? "Checked and safe" : "Not checked (pending)" }}
           </p>
+          <p class="muted">Family member identity details are managed in the Members tab.</p>
 
           <form *ngIf="canEditHousehold()" [formGroup]="householdForm" (ngSubmit)="saveHousehold()" class="edit-form">
-            <h3>Edit family record</h3>
+            <h3>Edit household details</h3>
             <div class="grid">
               <mat-form-field appearance="outline">
                 <mat-label>First name</mat-label>
@@ -42,21 +44,6 @@
               <mat-form-field appearance="outline">
                 <mat-label>Last name</mat-label>
                 <input matInput formControlName="lastName" />
-              </mat-form-field>
-
-              <mat-form-field appearance="outline">
-                <mat-label>Father name</mat-label>
-                <input matInput formControlName="fatherName" />
-              </mat-form-field>
-
-              <mat-form-field appearance="outline">
-                <mat-label>Mother name</mat-label>
-                <input matInput formControlName="motherName" />
-              </mat-form-field>
-
-              <mat-form-field appearance="outline">
-                <mat-label>Civil identity number</mat-label>
-                <input matInput formControlName="civilIdentityNumber" />
               </mat-form-field>
 
               <mat-form-field appearance="outline">
@@ -162,7 +149,7 @@
             </div>
 
             <button mat-raised-button color="primary" [disabled]="savingHousehold() || householdForm.invalid">
-              {{ savingHousehold() ? "Saving..." : "Save family changes" }}
+              {{ savingHousehold() ? "Saving..." : "Save household changes" }}
             </button>
             <p class="msg ok" *ngIf="householdMessage()">{{ householdMessage() }}</p>
             <p class="msg err" *ngIf="householdError()">{{ householdError() }}</p>

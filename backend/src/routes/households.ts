@@ -5,6 +5,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { requireRoles } from "../middleware/rbac";
 import { importHouseholdsWorkbook } from "../services/householdImport";
+import { buildHouseholdImportTemplateWorkbook } from "../services/householdImportTemplate";
 import { validateBody, validateQuery } from "../middleware/validate";
 import { writeAudit } from "../services/audit";
 import { asyncHandler } from "../utils/asyncHandler";
@@ -423,6 +424,20 @@ householdsRouter.post(
   requireRoles(Role.ADMIN, Role.CASE_WORKER),
   importUpload.single("file"),
   importExcelHandler
+);
+
+householdsRouter.get(
+  "/import-excel/template",
+  requireRoles(Role.ADMIN, Role.CASE_WORKER),
+  asyncHandler(async (_req, res) => {
+    const fileBuffer = buildHouseholdImportTemplateWorkbook();
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader("Content-Disposition", "attachment; filename=household-import-template.xlsx");
+    return res.send(fileBuffer);
+  })
 );
 
 householdsRouter.get(

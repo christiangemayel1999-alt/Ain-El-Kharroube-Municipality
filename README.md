@@ -215,6 +215,8 @@ SPA deep-link refresh is enabled via `frontend/vercel.json` rewrite:
 - `CRUD /users` (ADMIN)
 - `CRUD /zones`
 - `CRUD /households`
+- `GET /households/import-excel/template` (ADMIN, CASE_WORKER)
+- `POST /households/import-excel` (ADMIN, CASE_WORKER)
 - `GET/PUT /households/:id/contact` (ADMIN, CASE_WORKER)
 - `CRUD /housing-units`
 - `CRUD /landlords`
