@@ -578,6 +578,25 @@ householdsRouter.delete(
   "/:id",
   requireRoles(Role.ADMIN),
   asyncHandler(async (req, res) => {
+    const household = await prisma.household.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, householdCode: true }
+    });
+
+    if (!household) {
+      return res.status(404).json({ message: "Household not found" });
+    }
+
+    const rentalAgreementCount = await prisma.rentalAgreement.count({
+      where: { householdId: req.params.id }
+    });
+
+    if (rentalAgreementCount > 0) {
+      return res.status(409).json({
+        message: `Cannot delete family ${household.householdCode}: remove rental agreements first.`
+      });
+    }
+
     await prisma.household.delete({ where: { id: req.params.id } });
     await writeAudit(req.user!.id, "DELETE", "Household", req.params.id);
     return res.status(204).send();

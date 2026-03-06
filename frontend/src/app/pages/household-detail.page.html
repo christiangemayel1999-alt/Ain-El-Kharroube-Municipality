@@ -2,9 +2,19 @@
   <mat-card>
     <h2>{{ h.householdCode }}</h2>
     <p>Section: {{ h.zone?.name || h.zoneId }}</p>
-    <button mat-stroked-button color="warn" type="button" *ngIf="canDeleteHousehold()" (click)="deleteHousehold()">
+    <button
+      mat-stroked-button
+      color="warn"
+      type="button"
+      *ngIf="canDeleteHousehold() && !deleteArmed()"
+      (click)="deleteHousehold()"
+    >
       Delete family
     </button>
+    <div class="button-row left" *ngIf="canDeleteHousehold() && deleteArmed()">
+      <button mat-raised-button color="warn" type="button" (click)="deleteHousehold()">Confirm delete</button>
+      <button mat-button type="button" (click)="cancelDeleteHousehold()">Cancel</button>
+    </div>
   </mat-card>
 
   <mat-card>

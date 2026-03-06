@@ -24,6 +24,10 @@ export function errorHandler(error: unknown, _req: Request, res: Response, _next
       const target = Array.isArray(error.meta?.target) ? error.meta.target.join(", ") : "field";
       return res.status(409).json({ message: `Duplicate value for unique ${target}` });
     }
+    if (error.code === "P2003") {
+      const field = typeof error.meta?.field_name === "string" ? error.meta.field_name : "related records";
+      return res.status(409).json({ message: `Operation blocked by related records (${field}).` });
+    }
     if (error.code === "P2025") {
       return res.status(404).json({ message: "Record not found" });
     }

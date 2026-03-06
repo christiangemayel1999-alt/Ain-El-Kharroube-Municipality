@@ -50,6 +50,7 @@ export class HouseholdDetailPageComponent implements AfterViewInit, OnDestroy {
   readonly locationError = signal<string | null>(null);
   readonly contactMessage = signal<string | null>(null);
   readonly pickedCoordinate = signal<{ lat: number; lng: number } | null>(null);
+  readonly deleteArmed = signal(false);
 
   readonly householdForm = this.fb.group({
     firstName: [""],
@@ -134,18 +135,28 @@ export class HouseholdDetailPageComponent implements AfterViewInit, OnDestroy {
     if (!this.householdId || !this.canDeleteHousehold()) {
       return;
     }
-    if (!window.confirm("Delete this family record permanently?")) {
+    if (!this.deleteArmed()) {
+      this.deleteArmed.set(true);
+      this.householdError.set("Press Delete family again to confirm.");
       return;
     }
 
     this.api.delete(`/households/${this.householdId}`).subscribe({
       next: () => {
+        this.deleteArmed.set(false);
         void this.router.navigateByUrl("/households");
       },
-      error: () => {
-        this.householdError.set("Could not delete family record.");
+      error: (err: { error?: { message?: string } }) => {
+        this.householdError.set(err?.error?.message || "Could not delete family record.");
       }
     });
+  }
+
+  cancelDeleteHousehold() {
+    this.deleteArmed.set(false);
+    if (this.householdError() === "Press Delete family again to confirm.") {
+      this.householdError.set(null);
+    }
   }
 
   saveHousehold() {

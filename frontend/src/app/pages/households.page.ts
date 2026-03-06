@@ -76,6 +76,7 @@ import { AuthService } from "../services/auth.service";
         </div>
 
         <p class="import-summary err" *ngIf="importError()">{{ importError() }}</p>
+        <p class="import-summary err" *ngIf="deleteError()">{{ deleteError() }}</p>
 
         <div class="table-wrap">
           <table mat-table [dataSource]="dataSource">
@@ -120,8 +121,26 @@ import { AuthService } from "../services/auth.service";
               <th mat-header-cell *matHeaderCellDef>Actions</th>
               <td mat-cell *matCellDef="let row">
                 <a mat-button color="primary" [routerLink]="['/households', row.id]">Open</a>
-                <button mat-button color="warn" type="button" *ngIf="canDeleteHousehold()" (click)="deleteHousehold(row.id)">
+                <button
+                  mat-button
+                  color="warn"
+                  type="button"
+                  *ngIf="canDeleteHousehold() && pendingDeleteId() !== row.id"
+                  (click)="armDeleteHousehold(row.id)"
+                >
                   Delete
+                </button>
+                <button
+                  mat-raised-button
+                  color="warn"
+                  type="button"
+                  *ngIf="canDeleteHousehold() && pendingDeleteId() === row.id"
+                  (click)="deleteHousehold(row.id)"
+                >
+                  Confirm delete
+                </button>
+                <button mat-button type="button" *ngIf="canDeleteHousehold() && pendingDeleteId() === row.id" (click)="cancelDeleteHousehold()">
+                  Cancel
                 </button>
               </td>
             </ng-container>
@@ -220,6 +239,8 @@ export class HouseholdsPageComponent implements AfterViewInit {
   readonly importing = signal(false);
   readonly importSummary = signal<HouseholdImportSummary | null>(null);
   readonly importError = signal<string | null>(null);
+  readonly deleteError = signal<string | null>(null);
+  readonly pendingDeleteId = signal<string | null>(null);
 
   readonly filterForm = this.fb.nonNullable.group({
     zoneId: [""],
@@ -252,15 +273,35 @@ export class HouseholdsPageComponent implements AfterViewInit {
     return role === "ADMIN" || role === "CASE_WORKER";
   }
 
+  armDeleteHousehold(id: string) {
+    if (!this.canDeleteHousehold()) {
+      return;
+    }
+    this.deleteError.set(null);
+    this.pendingDeleteId.set(id);
+  }
+
+  cancelDeleteHousehold() {
+    this.pendingDeleteId.set(null);
+  }
+
   deleteHousehold(id: string) {
     if (!this.canDeleteHousehold()) {
       return;
     }
-    if (!window.confirm("Delete this family record?")) {
+    if (this.pendingDeleteId() !== id) {
+      this.pendingDeleteId.set(id);
       return;
     }
+    this.deleteError.set(null);
     this.api.delete(`/households/${id}`).subscribe({
-      next: () => this.loadHouseholds()
+      next: () => {
+        this.pendingDeleteId.set(null);
+        this.loadHouseholds();
+      },
+      error: (err: { error?: { message?: string } }) => {
+        this.deleteError.set(err?.error?.message || "Could not delete family record.");
+      }
     });
   }
 
