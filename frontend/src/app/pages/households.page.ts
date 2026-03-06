@@ -8,7 +8,7 @@ import { MatPaginator, MatPaginatorModule } from "@angular/material/paginator";
 import { MatSelectModule } from "@angular/material/select";
 import { MatTableDataSource, MatTableModule } from "@angular/material/table";
 import { RouterModule } from "@angular/router";
-import { Household, Zone } from "../models";
+import { Household, HouseholdImportSummary, Zone } from "../models";
 import { ApiService } from "../services/api.service";
 import { AuthService } from "../services/auth.service";
 
@@ -29,7 +29,15 @@ import { AuthService } from "../services/auth.service";
   template: `
     <div class="shell">
       <mat-card>
-        <h2>Households</h2>
+        <div class="header-row">
+          <h2>Households</h2>
+          <div class="actions">
+            <input #importFileInput type="file" accept=".xlsx,.xls" (change)="onImportFileSelected($event)" hidden />
+            <button mat-stroked-button color="primary" type="button" *ngIf="canImportExcel()" (click)="importFileInput.click()" [disabled]="importing()">
+              {{ importing() ? 'Importing...' : 'Import Excel' }}
+            </button>
+          </div>
+        </div>
 
         <form class="filters" [formGroup]="filterForm" (ngSubmit)="applyFilters()">
           <mat-form-field appearance="outline">
@@ -53,6 +61,21 @@ import { AuthService } from "../services/auth.service";
           <button mat-raised-button color="primary" type="submit">Apply</button>
           <button mat-button type="button" (click)="resetFilters()">Reset</button>
         </form>
+
+        <div class="import-summary ok" *ngIf="importSummary() as summary">
+          <p>
+            Imported households: {{ summary.householdsImported }} (created {{ summary.householdsCreated }}, updated {{ summary.householdsUpdated }})
+            | members: {{ summary.membersImported }} | rows with warnings: {{ summary.rowsWithWarnings }} | rows skipped: {{ summary.rowsSkipped }}
+          </p>
+          <p *ngIf="summary.warnings.length" class="small">
+            Warnings: {{ formatIssueList(summary.warnings) }}
+          </p>
+          <p *ngIf="summary.skipped.length" class="small">
+            Skipped: {{ formatIssueList(summary.skipped) }}
+          </p>
+        </div>
+
+        <p class="import-summary err" *ngIf="importError()">{{ importError() }}</p>
 
         <div class="table-wrap">
           <table mat-table [dataSource]="dataSource">
@@ -125,6 +148,47 @@ import { AuthService } from "../services/auth.service";
         margin-bottom: 0.5rem;
       }
 
+      .header-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+      }
+
+      .actions {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .import-summary {
+        margin: 0.5rem 0 0.75rem;
+        padding: 0.6rem 0.75rem;
+        border-radius: 0.5rem;
+      }
+
+      .import-summary.ok {
+        border: 1px solid #86efac;
+        background: #f0fdf4;
+      }
+
+      .import-summary.err {
+        border: 1px solid #fecaca;
+        background: #fef2f2;
+        color: #b91c1c;
+        font-weight: 600;
+      }
+
+      .import-summary p {
+        margin: 0;
+      }
+
+      .import-summary .small {
+        margin-top: 0.25rem;
+        font-size: 0.85rem;
+      }
+
       .table-wrap {
         overflow-x: auto;
       }
@@ -153,6 +217,9 @@ export class HouseholdsPageComponent implements AfterViewInit {
   readonly zones = signal<Zone[]>([]);
   readonly displayedColumns = ["householdCode", "headName", "originArea", "zone", "familySize", "status", "safetyCheckStatus", "actions"];
   readonly dataSource = new MatTableDataSource<Household>([]);
+  readonly importing = signal(false);
+  readonly importSummary = signal<HouseholdImportSummary | null>(null);
+  readonly importError = signal<string | null>(null);
 
   readonly filterForm = this.fb.nonNullable.group({
     zoneId: [""],
@@ -180,6 +247,11 @@ export class HouseholdsPageComponent implements AfterViewInit {
     return this.auth.currentUser()?.role === "ADMIN";
   }
 
+  canImportExcel() {
+    const role = this.auth.currentUser()?.role;
+    return role === "ADMIN" || role === "CASE_WORKER";
+  }
+
   deleteHousehold(id: string) {
     if (!this.canDeleteHousehold()) {
       return;
@@ -195,6 +267,47 @@ export class HouseholdsPageComponent implements AfterViewInit {
   displayFamilyName(row: Household) {
     const full = `${row.firstName ?? ""} ${row.lastName ?? ""}`.trim();
     return full || row.headName || "-";
+  }
+
+  onImportFileSelected(event: Event) {
+    const input = event.target as HTMLInputElement | null;
+    const file = input?.files?.[0] ?? null;
+    if (!file) {
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("file", file, file.name);
+
+    this.importing.set(true);
+    this.importError.set(null);
+    this.importSummary.set(null);
+
+    this.api.postForm<HouseholdImportSummary>("/households/import-excel", formData).subscribe({
+      next: (summary) => {
+        this.importing.set(false);
+        this.importSummary.set(summary);
+        this.importError.set(null);
+        this.loadHouseholds();
+        if (input) {
+          input.value = "";
+        }
+      },
+      error: (err: { error?: { message?: string } }) => {
+        this.importing.set(false);
+        this.importError.set(err?.error?.message || "Could not import Excel file.");
+        if (input) {
+          input.value = "";
+        }
+      }
+    });
+  }
+
+  formatIssueList(items: Array<{ rowNumber: number; message: string }>) {
+    return items
+      .slice(0, 5)
+      .map((issue) => `row ${issue.rowNumber}: ${issue.message}`)
+      .join(" | ");
   }
 
   private loadZones() {

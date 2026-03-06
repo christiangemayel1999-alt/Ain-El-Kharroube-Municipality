@@ -19,6 +19,10 @@ export class ApiService {
     return this.http.post<T>(`${environment.apiBaseUrl}${path}`, payload);
   }
 
+  postForm<T>(path: string, formData: FormData): Observable<T> {
+    return this.http.post<T>(`${environment.apiBaseUrl}${path}`, formData);
+  }
+
   patch<T>(path: string, payload: unknown): Observable<T> {
     return this.http.patch<T>(`${environment.apiBaseUrl}${path}`, payload);
   }

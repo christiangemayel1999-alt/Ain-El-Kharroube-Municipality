@@ -1,6 +1,6 @@
 import { CommonModule } from "@angular/common";
-import { Component, inject, signal } from "@angular/core";
-import { FormBuilder, ReactiveFormsModule, Validators } from "@angular/forms";
+import { AfterViewInit, Component, OnDestroy, inject, signal } from "@angular/core";
+import { FormArray, FormBuilder, ReactiveFormsModule, Validators } from "@angular/forms";
 import { MatButtonModule } from "@angular/material/button";
 import { MatCardModule } from "@angular/material/card";
 import { MatFormFieldModule } from "@angular/material/form-field";
@@ -8,7 +8,8 @@ import { MatInputModule } from "@angular/material/input";
 import { MatSelectModule } from "@angular/material/select";
 import { MatTabsModule } from "@angular/material/tabs";
 import { ActivatedRoute, Router } from "@angular/router";
-import { Household, Role } from "../models";
+import * as L from "leaflet";
+import { Household, HouseholdMember, Role } from "../models";
 import { ApiService } from "../services/api.service";
 import { AuthService } from "../services/auth.service";
 import { getMissingCarFields } from "./household-detail.validation";
@@ -26,320 +27,10 @@ import { getMissingCarFields } from "./household-detail.validation";
     MatSelectModule,
     MatButtonModule
   ],
-  template: `
-    <div class="shell" *ngIf="household() as h">
-      <mat-card>
-        <h2>{{ h.householdCode }}</h2>
-        <p>Section: {{ h.zone?.name || h.zoneId }}</p>
-        <button mat-stroked-button color="warn" type="button" *ngIf="canDeleteHousehold()" (click)="deleteHousehold()">
-          Delete family
-        </button>
-      </mat-card>
-
-      <mat-card>
-        <mat-tab-group>
-          <mat-tab label="Overview">
-            <div class="tab-content">
-              <p><strong>Map pin:</strong> {{ h.approxLat }}, {{ h.approxLng }} ({{ h.pinPrecisionM === 0 ? 'Exact' : '+/-' + h.pinPrecisionM + 'm' }})</p>
-              <p><strong>Pin label:</strong> {{ h.pinLabel || '-' }}</p>
-              <p><strong>First / Last name:</strong> {{ h.firstName || '-' }} {{ h.lastName || '' }}</p>
-              <p><strong>Father / Mother:</strong> {{ h.fatherName || '-' }} / {{ h.motherName || '-' }}</p>
-              <p><strong>Civil identity number:</strong> {{ h.civilIdentityNumber || '-' }}</p>
-              <p><strong>Phone number:</strong> {{ h.phoneNumber || '-' }}</p>
-              <p [ngClass]="h.safetyCheckStatus === 'CHECKED_SAFE' ? 'status-safe' : 'status-pending'">
-                <strong>Safety check:</strong> {{ h.safetyCheckStatus === 'CHECKED_SAFE' ? 'Checked and safe' : 'Not checked (pending)' }}
-              </p>
-              <p><strong>Family origin area (within country):</strong> {{ h.originArea || '-' }}</p>
-              <p><strong>Nationality:</strong> {{ h.nationality || '-' }}</p>
-              <p><strong>Preferred language:</strong> {{ h.preferredLanguage || '-' }}</p>
-              <p><strong>Case priority:</strong> {{ h.casePriority || 'MEDIUM' }}</p>
-              <p><strong>Emergency contact:</strong> {{ h.emergencyName || '-' }} | {{ h.emergencyPhone || '-' }} | {{ h.emergencyRelation || '-' }}</p>
-              <p *ngIf="h.checkedByUserId"><strong>Checked by:</strong> {{ h.checkedByUserId }}</p>
-              <p *ngIf="h.checkedAt"><strong>Checked at:</strong> {{ h.checkedAt | date:'yyyy-MM-dd HH:mm' }}</p>
-
-              <div class="members-block">
-                <p><strong>Members:</strong></p>
-                <p *ngIf="!h.members?.length">No member list recorded.</p>
-                <ul *ngIf="h.members?.length">
-                  <li *ngFor="let member of h.members">
-                    {{ member.name }} ({{ member.gender }}, age {{ member.age }}) | rel: {{ member.relationshipToHead || '-' }} |
-                    ID: {{ member.idDocStatus || 'UNKNOWN' }} {{ member.idDocType || '' }} {{ member.idDocLast4 ? '(****' + member.idDocLast4 + ')' : '' }} |
-                    school: {{ member.schoolEnrollment || 'NA' }} | work: {{ member.employmentStatus || 'NA' }}
-                  </li>
-                </ul>
-              </div>
-
-              <form *ngIf="canEditHousehold()" [formGroup]="householdForm" (ngSubmit)="saveHousehold()" class="edit-form">
-                <h3>Edit family record</h3>
-                <div class="grid">
-                  <mat-form-field appearance="outline">
-                    <mat-label>First name</mat-label>
-                    <input matInput formControlName="firstName" />
-                  </mat-form-field>
-
-                  <mat-form-field appearance="outline">
-                    <mat-label>Last name</mat-label>
-                    <input matInput formControlName="lastName" />
-                  </mat-form-field>
-
-                  <mat-form-field appearance="outline">
-                    <mat-label>Father name</mat-label>
-                    <input matInput formControlName="fatherName" />
-                  </mat-form-field>
-
-                  <mat-form-field appearance="outline">
-                    <mat-label>Mother name</mat-label>
-                    <input matInput formControlName="motherName" />
-                  </mat-form-field>
-
-                  <mat-form-field appearance="outline">
-                    <mat-label>Civil identity number</mat-label>
-                    <input matInput formControlName="civilIdentityNumber" />
-                  </mat-form-field>
-
-                  <mat-form-field appearance="outline">
-                    <mat-label>Phone number</mat-label>
-                    <input matInput formControlName="phoneNumber" />
-                  </mat-form-field>
-
-                  <mat-form-field appearance="outline">
-                    <mat-label>Map pin label</mat-label>
-                    <input matInput formControlName="pinLabel" />
-                  </mat-form-field>
-
-                  <mat-form-field appearance="outline">
-                    <mat-label>Head of household</mat-label>
-                    <input matInput formControlName="headName" />
-                  </mat-form-field>
-
-                  <mat-form-field appearance="outline">
-                    <mat-label>Family origin area (within country)</mat-label>
-                    <input matInput formControlName="originArea" />
-                  </mat-form-field>
-
-                  <mat-form-field appearance="outline">
-                    <mat-label>Nationality</mat-label>
-                    <input matInput formControlName="nationality" />
-                  </mat-form-field>
-
-                  <mat-form-field appearance="outline">
-                    <mat-label>Preferred language</mat-label>
-                    <input matInput formControlName="preferredLanguage" />
-                  </mat-form-field>
-
-                  <mat-form-field appearance="outline">
-                    <mat-label>Arrival date</mat-label>
-                    <input matInput type="date" formControlName="arrivalDate" />
-                  </mat-form-field>
-
-                  <mat-form-field appearance="outline">
-                    <mat-label>Housing type</mat-label>
-                    <mat-select formControlName="housingType">
-                      <mat-option value="RENTAL">RENTAL</mat-option>
-                      <mat-option value="HOST">HOST</mat-option>
-                      <mat-option value="SHELTER">SHELTER</mat-option>
-                      <mat-option value="OTHER">OTHER</mat-option>
-                    </mat-select>
-                  </mat-form-field>
-
-                  <mat-form-field appearance="outline">
-                    <mat-label>Case status</mat-label>
-                    <mat-select formControlName="status">
-                      <mat-option value="ACTIVE">ACTIVE</mat-option>
-                      <mat-option value="MOVED_OUT">MOVED_OUT</mat-option>
-                      <mat-option value="CLOSED">CLOSED</mat-option>
-                    </mat-select>
-                  </mat-form-field>
-
-                  <mat-form-field appearance="outline">
-                    <mat-label>Safety check</mat-label>
-                    <mat-select formControlName="safetyCheckStatus">
-                      <mat-option value="PENDING">NOT CHECKED (PENDING)</mat-option>
-                      <mat-option value="CHECKED_SAFE">CHECKED AND SAFE</mat-option>
-                    </mat-select>
-                  </mat-form-field>
-
-                  <mat-form-field appearance="outline">
-                    <mat-label>Case priority</mat-label>
-                    <mat-select formControlName="casePriority">
-                      <mat-option value="LOW">LOW</mat-option>
-                      <mat-option value="MEDIUM">MEDIUM</mat-option>
-                      <mat-option value="HIGH">HIGH</mat-option>
-                    </mat-select>
-                  </mat-form-field>
-
-                  <mat-form-field appearance="outline">
-                    <mat-label>Has car?</mat-label>
-                    <mat-select formControlName="hasCar">
-                      <mat-option [value]="false">No</mat-option>
-                      <mat-option [value]="true">Yes</mat-option>
-                    </mat-select>
-                  </mat-form-field>
-                </div>
-
-                <div class="grid" *ngIf="householdForm.get('hasCar')?.value">
-                  <mat-form-field appearance="outline">
-                    <mat-label>Car model</mat-label>
-                    <input matInput formControlName="carModel" />
-                  </mat-form-field>
-                  <mat-form-field appearance="outline">
-                    <mat-label>Car color</mat-label>
-                    <input matInput formControlName="carColor" />
-                  </mat-form-field>
-                  <mat-form-field appearance="outline">
-                    <mat-label>Car number</mat-label>
-                    <input matInput formControlName="carPlate" />
-                  </mat-form-field>
-                </div>
-
-                <div class="grid">
-                  <mat-form-field appearance="outline">
-                    <mat-label>Emergency contact name</mat-label>
-                    <input matInput formControlName="emergencyName" />
-                  </mat-form-field>
-                  <mat-form-field appearance="outline">
-                    <mat-label>Emergency contact phone</mat-label>
-                    <input matInput formControlName="emergencyPhone" />
-                  </mat-form-field>
-                  <mat-form-field appearance="outline">
-                    <mat-label>Emergency relation</mat-label>
-                    <input matInput formControlName="emergencyRelation" />
-                  </mat-form-field>
-                </div>
-
-                <button mat-raised-button color="primary" [disabled]="savingHousehold() || householdForm.invalid">
-                  {{ savingHousehold() ? 'Saving...' : 'Save family changes' }}
-                </button>
-                <p class="msg ok" *ngIf="householdMessage()">{{ householdMessage() }}</p>
-                <p class="msg err" *ngIf="householdError()">{{ householdError() }}</p>
-              </form>
-            </div>
-          </mat-tab>
-
-          <mat-tab label="Contacts">
-            <div class="tab-content" *ngIf="canViewContacts(); else noContactAccess">
-              <form [formGroup]="contactForm" (ngSubmit)="saveContact()" class="edit-form">
-                <h3>Contact details</h3>
-                <div class="grid">
-                  <mat-form-field appearance="outline">
-                    <mat-label>Phone</mat-label>
-                    <input matInput formControlName="phone" />
-                  </mat-form-field>
-                  <mat-form-field appearance="outline">
-                    <mat-label>WhatsApp</mat-label>
-                    <input matInput formControlName="whatsapp" />
-                  </mat-form-field>
-                  <mat-form-field appearance="outline">
-                    <mat-label>Consent</mat-label>
-                    <mat-select formControlName="consent">
-                      <mat-option [value]="false">No</mat-option>
-                      <mat-option [value]="true">Yes</mat-option>
-                    </mat-select>
-                  </mat-form-field>
-                </div>
-                <button mat-raised-button color="primary" [disabled]="savingContact()">
-                  {{ savingContact() ? 'Saving...' : 'Save contact' }}
-                </button>
-                <p class="msg ok" *ngIf="contactMessage()">{{ contactMessage() }}</p>
-              </form>
-            </div>
-          </mat-tab>
-
-          <mat-tab label="Rental">
-            <div class="tab-content">
-              <p *ngIf="!h.rentalAgreements?.length">No agreements.</p>
-              <div *ngFor="let ra of h.rentalAgreements">
-                <p><strong>{{ ra.agreementCode }}</strong> | {{ ra.status }} | {{ ra.monthlyRent }}</p>
-              </div>
-            </div>
-          </mat-tab>
-
-          <mat-tab label="Incidents">
-            <div class="tab-content">
-              <p *ngIf="!h.incidents?.length">No incidents.</p>
-              <div *ngFor="let incident of h.incidents">
-                <p>{{ incident.incidentCode }} | {{ incident.priority }} | {{ incident.status }}</p>
-              </div>
-            </div>
-          </mat-tab>
-        </mat-tab-group>
-      </mat-card>
-    </div>
-
-    <ng-template #noContactAccess>
-      <div class="tab-content">
-        <p>Contact details are restricted to ADMIN and CASE_WORKER.</p>
-      </div>
-    </ng-template>
-  `,
-  styles: [
-    `
-      .shell {
-        padding: 1rem;
-        display: grid;
-        gap: 1rem;
-      }
-
-      .shell mat-card:first-child button {
-        margin-top: 0.5rem;
-      }
-
-      .tab-content {
-        padding: 1rem 0.25rem;
-      }
-
-      .members-block ul {
-        margin: 0.25rem 0 0;
-        padding-left: 1.1rem;
-      }
-
-      .edit-form {
-        margin-top: 1rem;
-        display: grid;
-        gap: 0.75rem;
-        background: #f8fafc;
-        border: 1px solid #d6e0e7;
-        border-radius: 0.5rem;
-        padding: 0.75rem;
-      }
-
-      .grid {
-        display: grid;
-        gap: 0.75rem;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-      }
-
-      .status-pending {
-        color: #b91c1c;
-        font-weight: 600;
-      }
-
-      .status-safe {
-        color: #15803d;
-        font-weight: 600;
-      }
-
-      .msg.ok {
-        color: #15803d;
-        font-weight: 600;
-        margin: 0;
-      }
-
-      .msg.err {
-        color: #b91c1c;
-        font-weight: 600;
-        margin: 0;
-      }
-
-      @media (max-width: 900px) {
-        .grid {
-          grid-template-columns: 1fr;
-        }
-      }
-    `
-  ]
+  templateUrl: "./household-detail.page.html",
+  styleUrl: "./household-detail.page.css"
 })
-export class HouseholdDetailPageComponent {
+export class HouseholdDetailPageComponent implements AfterViewInit, OnDestroy {
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly api = inject(ApiService);
@@ -348,28 +39,34 @@ export class HouseholdDetailPageComponent {
 
   readonly household = signal<Household | null>(null);
   readonly savingHousehold = signal(false);
+  readonly savingMembers = signal(false);
+  readonly savingLocation = signal(false);
   readonly savingContact = signal(false);
   readonly householdMessage = signal<string | null>(null);
   readonly householdError = signal<string | null>(null);
+  readonly membersMessage = signal<string | null>(null);
+  readonly membersError = signal<string | null>(null);
+  readonly locationMessage = signal<string | null>(null);
+  readonly locationError = signal<string | null>(null);
   readonly contactMessage = signal<string | null>(null);
+  readonly pickedCoordinate = signal<{ lat: number; lng: number } | null>(null);
 
   readonly householdForm = this.fb.group({
-    firstName: ["", Validators.required],
-    lastName: ["", Validators.required],
-    fatherName: ["", Validators.required],
-    motherName: ["", Validators.required],
-    civilIdentityNumber: ["", Validators.required],
-    phoneNumber: ["", Validators.required],
+    firstName: [""],
+    lastName: [""],
+    fatherName: [""],
+    motherName: [""],
+    civilIdentityNumber: [""],
+    phoneNumber: [""],
     pinLabel: [""],
     headName: [""],
     originArea: [""],
     nationality: [""],
     preferredLanguage: [""],
-    arrivalDate: ["", Validators.required],
-    housingType: ["HOST", Validators.required],
-    status: ["ACTIVE", Validators.required],
-    safetyCheckStatus: ["PENDING", Validators.required],
-    casePriority: ["MEDIUM", Validators.required],
+    arrivalDate: [""],
+    housingType: ["HOST"],
+    status: ["ACTIVE"],
+    casePriority: ["MEDIUM"],
     hasCar: [false, Validators.required],
     carModel: [""],
     carColor: [""],
@@ -379,6 +76,10 @@ export class HouseholdDetailPageComponent {
     emergencyRelation: [""]
   });
 
+  readonly membersForm = this.fb.group({
+    members: this.fb.array([])
+  });
+
   readonly contactForm = this.fb.group({
     phone: [""],
     whatsapp: [""],
@@ -386,6 +87,9 @@ export class HouseholdDetailPageComponent {
   });
 
   private readonly householdId: string | null;
+  private map: L.Map | null = null;
+  private mapPoint: L.CircleMarker | null = null;
+  private readonly defaultMapCenter: L.LatLngTuple = [33.93444, 35.69972];
 
   constructor() {
     this.householdId = this.route.snapshot.paramMap.get("id");
@@ -396,6 +100,21 @@ export class HouseholdDetailPageComponent {
     if (this.householdId) {
       this.loadHousehold(this.householdId);
     }
+  }
+
+  ngAfterViewInit() {
+    this.deferMapRefresh();
+  }
+
+  ngOnDestroy() {
+    if (this.map) {
+      this.map.remove();
+      this.map = null;
+    }
+  }
+
+  get membersArray() {
+    return this.membersForm.get("members") as FormArray;
   }
 
   canViewContacts() {
@@ -415,7 +134,6 @@ export class HouseholdDetailPageComponent {
     if (!this.householdId || !this.canDeleteHousehold()) {
       return;
     }
-
     if (!window.confirm("Delete this family record permanently?")) {
       return;
     }
@@ -449,8 +167,7 @@ export class HouseholdDetailPageComponent {
     });
     if (missingCarFields.length) {
       for (const field of missingCarFields) {
-        const control = this.householdForm.get(field);
-        control?.markAsTouched();
+        this.householdForm.get(field)?.markAsTouched();
       }
       this.householdError.set("Car model, color, and number are required when 'Has car' is Yes.");
       return;
@@ -461,40 +178,160 @@ export class HouseholdDetailPageComponent {
     this.householdError.set(null);
     this.api
       .patch<Household>(`/households/${this.householdId}`, {
-        firstName: String(form.firstName ?? "").trim(),
-        lastName: String(form.lastName ?? "").trim(),
-        fatherName: String(form.fatherName ?? "").trim(),
-        motherName: String(form.motherName ?? "").trim(),
-        civilIdentityNumber: String(form.civilIdentityNumber ?? "").trim(),
-        phoneNumber: String(form.phoneNumber ?? "").trim(),
-        pinLabel: String(form.pinLabel ?? "").trim() || null,
-        headName: String(form.headName ?? "").trim() || null,
-        originArea: String(form.originArea ?? "").trim() || null,
-        nationality: String(form.nationality ?? "").trim() || null,
-        preferredLanguage: String(form.preferredLanguage ?? "").trim() || null,
-        arrivalDate: form.arrivalDate,
+        firstName: this.toOptionalText(form.firstName),
+        lastName: this.toOptionalText(form.lastName),
+        fatherName: this.toOptionalText(form.fatherName),
+        motherName: this.toOptionalText(form.motherName),
+        civilIdentityNumber: this.toOptionalText(form.civilIdentityNumber),
+        phoneNumber: this.toOptionalText(form.phoneNumber),
+        pinLabel: this.toNullableText(form.pinLabel),
+        headName: this.toNullableText(form.headName),
+        originArea: this.toNullableText(form.originArea),
+        nationality: this.toNullableText(form.nationality),
+        preferredLanguage: this.toNullableText(form.preferredLanguage),
+        arrivalDate: this.toOptionalText(form.arrivalDate),
         housingType: form.housingType,
         status: form.status,
-        safetyCheckStatus: form.safetyCheckStatus,
         casePriority: form.casePriority,
         hasCar,
-        carModel: hasCar ? String(form.carModel ?? "").trim() : null,
-        carColor: hasCar ? String(form.carColor ?? "").trim() : null,
-        carPlate: hasCar ? String(form.carPlate ?? "").trim() : null,
-        emergencyName: String(form.emergencyName ?? "").trim() || null,
-        emergencyPhone: String(form.emergencyPhone ?? "").trim() || null,
-        emergencyRelation: String(form.emergencyRelation ?? "").trim() || null
+        carModel: hasCar ? this.toNullableText(form.carModel) : null,
+        carColor: hasCar ? this.toNullableText(form.carColor) : null,
+        carPlate: hasCar ? this.toNullableText(form.carPlate) : null,
+        emergencyName: this.toNullableText(form.emergencyName),
+        emergencyPhone: this.toNullableText(form.emergencyPhone),
+        emergencyRelation: this.toNullableText(form.emergencyRelation)
       })
       .subscribe({
         next: (updated) => {
           this.savingHousehold.set(false);
-          this.household.set(updated);
+          this.applyHousehold(updated);
           this.householdMessage.set("Family details updated.");
-          this.householdError.set(null);
+        },
+        error: (err: { error?: { message?: string } }) => {
+          this.savingHousehold.set(false);
+          this.householdError.set(err?.error?.message || "Could not save family details.");
+        }
+      });
+  }
+
+  addMember() {
+    this.membersArray.push(this.createMemberGroup());
+  }
+
+  removeMember(index: number) {
+    this.membersArray.removeAt(index);
+  }
+
+  moveMember(fromIndex: number, toIndex: number) {
+    if (toIndex < 0 || toIndex >= this.membersArray.length || fromIndex === toIndex) {
+      return;
+    }
+    const control = this.membersArray.at(fromIndex);
+    this.membersArray.removeAt(fromIndex);
+    this.membersArray.insert(toIndex, control);
+  }
+
+  memberNamePreview(index: number) {
+    const control = this.membersArray.at(index);
+    const first = String(control.get("firstName")?.value ?? "").trim();
+    const last = String(control.get("lastName")?.value ?? "").trim();
+    const fallback = String(control.get("name")?.value ?? "").trim();
+    return `${first} ${last}`.trim() || fallback || "Unnamed";
+  }
+
+  saveMembers() {
+    if (!this.householdId || !this.canEditHousehold()) {
+      return;
+    }
+
+    const membersPayload = this.membersArray.controls.map((control, index) => {
+      const value = control.getRawValue();
+      const firstName = String(value.firstName ?? "").trim();
+      const lastName = String(value.lastName ?? "").trim();
+      const name = `${firstName} ${lastName}`.trim() || String(value.name ?? "").trim() || `Member ${index + 1}`;
+      const hasCar = !!value.hasCar;
+      const idDocLast4Digits = String(value.idDocLast4 ?? "").replace(/\D/g, "");
+      const yearOfBirth = this.toOptionalNumberInRange(value.yearOfBirth, 1900, 2100);
+
+      return {
+        name,
+        firstName: firstName || null,
+        lastName: lastName || null,
+        fatherName: this.toNullableText(value.fatherName),
+        motherName: this.toNullableText(value.motherName),
+        civilIdentityNumber: this.toNullableText(value.civilIdentityNumber),
+        phoneNumber: this.toNullableText(value.phoneNumber),
+        originArea: this.toNullableText(value.originArea),
+        nationality: this.toNullableText(value.nationality),
+        gender: value.gender === "FEMALE" ? "FEMALE" : "MALE",
+        age: Number.isFinite(Number(value.age)) ? Number(value.age) : 0,
+        relationshipToHead: this.toNullableText(value.relationshipToHead),
+        yearOfBirth,
+        safetyCheckStatus: value.safetyCheckStatus === "CHECKED_SAFE" ? "CHECKED_SAFE" : "PENDING",
+        idDocStatus: value.idDocStatus || "UNKNOWN",
+        idDocType: this.toNullableText(value.idDocType),
+        idDocLast4: idDocLast4Digits.length === 4 ? idDocLast4Digits : null,
+        schoolEnrollment: value.schoolEnrollment || "NA",
+        employmentStatus: value.employmentStatus || "NA",
+        hasDisability: !!value.hasDisability,
+        hasChronicCondition: !!value.hasChronicCondition,
+        pregnantOrLactating: !!value.pregnantOrLactating,
+        hasCar,
+        carModel: hasCar ? this.toNullableText(value.carModel) : null,
+        carColor: hasCar ? this.toNullableText(value.carColor) : null,
+        carPlate: hasCar ? this.toNullableText(value.carPlate) : null
+      };
+    });
+
+    this.savingMembers.set(true);
+    this.membersMessage.set(null);
+    this.membersError.set(null);
+    this.api.patch<Household>(`/households/${this.householdId}`, { members: membersPayload }).subscribe({
+      next: (updated) => {
+        this.savingMembers.set(false);
+        this.applyHousehold(updated);
+        this.membersMessage.set("Members updated.");
+      },
+      error: (err: { error?: { message?: string } }) => {
+        this.savingMembers.set(false);
+        this.membersError.set(err?.error?.message || "Could not save members.");
+      }
+    });
+  }
+
+  clearPickedCoordinate() {
+    this.pickedCoordinate.set(null);
+    this.renderMapPoint();
+  }
+
+  saveLocation() {
+    if (!this.householdId || !this.canEditHousehold()) {
+      return;
+    }
+    const picked = this.pickedCoordinate();
+    if (!picked) {
+      return;
+    }
+
+    this.savingLocation.set(true);
+    this.locationMessage.set(null);
+    this.locationError.set(null);
+    this.api
+      .patch<Household>(`/households/${this.householdId}`, {
+        clickedLat: picked.lat,
+        clickedLng: picked.lng,
+        pinPrecisionM: 0
+      })
+      .subscribe({
+        next: (updated) => {
+          this.savingLocation.set(false);
+          this.pickedCoordinate.set(null);
+          this.applyHousehold(updated);
+          this.locationMessage.set("Location updated.");
         },
         error: () => {
-          this.savingHousehold.set(false);
-          this.householdError.set("Could not save family details.");
+          this.savingLocation.set(false);
+          this.locationError.set("Could not save location.");
         }
       });
   }
@@ -508,8 +345,8 @@ export class HouseholdDetailPageComponent {
     this.contactMessage.set(null);
     this.api
       .put(`/households/${this.householdId}/contact`, {
-        phone: String(form.phone ?? "").trim() || null,
-        whatsapp: String(form.whatsapp ?? "").trim() || null,
+        phone: this.toNullableText(form.phone),
+        whatsapp: this.toNullableText(form.whatsapp),
         consent: !!form.consent
       })
       .subscribe({
@@ -525,41 +362,162 @@ export class HouseholdDetailPageComponent {
   }
 
   private loadHousehold(id: string) {
-    this.api.get<Household>(`/households/${id}`).subscribe((household) => {
-      this.household.set(household);
-      this.householdForm.patchValue({
-        firstName: household.firstName ?? "",
-        lastName: household.lastName ?? "",
-        fatherName: household.fatherName ?? "",
-        motherName: household.motherName ?? "",
-        civilIdentityNumber: household.civilIdentityNumber ?? "",
-        phoneNumber: household.phoneNumber ?? "",
-        pinLabel: household.pinLabel ?? "",
-        headName: household.headName ?? "",
-        originArea: household.originArea ?? "",
-        nationality: household.nationality ?? "",
-        preferredLanguage: household.preferredLanguage ?? "",
-        arrivalDate: household.arrivalDate ? String(household.arrivalDate).slice(0, 10) : "",
-        housingType: household.housingType ?? "HOST",
-        status: household.status ?? "ACTIVE",
-        safetyCheckStatus: household.safetyCheckStatus ?? "PENDING",
-        casePriority: household.casePriority ?? "MEDIUM",
-        hasCar: !!household.hasCar,
-        carModel: household.carModel ?? "",
-        carColor: household.carColor ?? "",
-        carPlate: household.carPlate ?? "",
-        emergencyName: household.emergencyName ?? "",
-        emergencyPhone: household.emergencyPhone ?? "",
-        emergencyRelation: household.emergencyRelation ?? ""
-      });
-      this.syncCarValidators(!!household.hasCar);
+    this.api.get<Household>(`/households/${id}`).subscribe((household) => this.applyHousehold(household));
+  }
 
-      this.contactForm.patchValue({
-        phone: household.contact?.phone ?? "",
-        whatsapp: household.contact?.whatsapp ?? "",
-        consent: !!household.contact?.consent
-      });
+  private applyHousehold(household: Household) {
+    this.household.set(household);
+    this.householdForm.patchValue({
+      firstName: household.firstName ?? "",
+      lastName: household.lastName ?? "",
+      fatherName: household.fatherName ?? "",
+      motherName: household.motherName ?? "",
+      civilIdentityNumber: household.civilIdentityNumber ?? "",
+      phoneNumber: household.phoneNumber ?? "",
+      pinLabel: household.pinLabel ?? "",
+      headName: household.headName ?? "",
+      originArea: household.originArea ?? "",
+      nationality: household.nationality ?? "",
+      preferredLanguage: household.preferredLanguage ?? "",
+      arrivalDate: household.arrivalDate ? String(household.arrivalDate).slice(0, 10) : "",
+      housingType: household.housingType ?? "HOST",
+      status: household.status ?? "ACTIVE",
+      casePriority: household.casePriority ?? "MEDIUM",
+      hasCar: !!household.hasCar,
+      carModel: household.carModel ?? "",
+      carColor: household.carColor ?? "",
+      carPlate: household.carPlate ?? "",
+      emergencyName: household.emergencyName ?? "",
+      emergencyPhone: household.emergencyPhone ?? "",
+      emergencyRelation: household.emergencyRelation ?? ""
     });
+    this.syncCarValidators(!!household.hasCar);
+    this.setMembersForm(household.members ?? []);
+    this.contactForm.patchValue({
+      phone: household.contact?.phone ?? "",
+      whatsapp: household.contact?.whatsapp ?? "",
+      consent: !!household.contact?.consent
+    });
+    this.deferMapRefresh();
+  }
+
+  private setMembersForm(members: HouseholdMember[]) {
+    this.membersArray.clear();
+    for (const member of members) {
+      this.membersArray.push(this.createMemberGroup(member));
+    }
+    if (this.membersArray.length === 0) {
+      this.membersArray.push(this.createMemberGroup());
+    }
+  }
+
+  private createMemberGroup(member?: Partial<HouseholdMember>) {
+    const hasCar = !!member?.hasCar;
+    return this.fb.group({
+      name: [member?.name ?? ""],
+      firstName: [member?.firstName ?? ""],
+      lastName: [member?.lastName ?? ""],
+      fatherName: [member?.fatherName ?? ""],
+      motherName: [member?.motherName ?? ""],
+      civilIdentityNumber: [member?.civilIdentityNumber ?? ""],
+      phoneNumber: [member?.phoneNumber ?? ""],
+      originArea: [member?.originArea ?? ""],
+      nationality: [member?.nationality ?? ""],
+      gender: [member?.gender ?? "MALE"],
+      age: [Number.isFinite(Number(member?.age)) ? Number(member?.age) : 0],
+      relationshipToHead: [member?.relationshipToHead ?? ""],
+      yearOfBirth: [member?.yearOfBirth ?? null],
+      safetyCheckStatus: [member?.safetyCheckStatus ?? "PENDING"],
+      idDocStatus: [member?.idDocStatus ?? "UNKNOWN"],
+      idDocType: [member?.idDocType ?? ""],
+      idDocLast4: [member?.idDocLast4 ?? ""],
+      schoolEnrollment: [member?.schoolEnrollment ?? "NA"],
+      employmentStatus: [member?.employmentStatus ?? "NA"],
+      hasDisability: [!!member?.hasDisability],
+      hasChronicCondition: [!!member?.hasChronicCondition],
+      pregnantOrLactating: [!!member?.pregnantOrLactating],
+      hasCar: [hasCar],
+      carModel: [member?.carModel ?? ""],
+      carColor: [member?.carColor ?? ""],
+      carPlate: [member?.carPlate ?? ""]
+    });
+  }
+
+  private initMap() {
+    const container = document.getElementById("household-location-map");
+    if (!container) {
+      return;
+    }
+
+    const h = this.household();
+    const center: L.LatLngTuple =
+      h?.approxLat != null && h.approxLng != null ? [h.approxLat, h.approxLng] : this.defaultMapCenter;
+
+    if (!this.map) {
+      this.map = L.map("household-location-map", { center, zoom: 15 });
+
+      L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+        attribution: "Tiles &copy; Esri - Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+        maxZoom: 20
+      }).addTo(this.map);
+
+      L.tileLayer(
+        "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+        {
+          attribution: "Labels &copy; Esri",
+          maxZoom: 20
+        }
+      ).addTo(this.map);
+
+      this.map.on("click", (event: L.LeafletMouseEvent) => {
+        this.pickedCoordinate.set({
+          lat: Number(event.latlng.lat.toFixed(6)),
+          lng: Number(event.latlng.lng.toFixed(6))
+        });
+        this.locationMessage.set(null);
+        this.locationError.set(null);
+        this.renderMapPoint();
+      });
+    } else {
+      this.map.setView(center, this.map.getZoom());
+      this.map.invalidateSize();
+    }
+
+    this.renderMapPoint();
+  }
+
+  private renderMapPoint() {
+    if (!this.map) {
+      return;
+    }
+    if (this.mapPoint) {
+      this.map.removeLayer(this.mapPoint);
+      this.mapPoint = null;
+    }
+
+    const picked = this.pickedCoordinate();
+    const h = this.household();
+    const target = picked
+      ? { lat: picked.lat, lng: picked.lng, picked: true }
+      : h?.approxLat != null && h.approxLng != null
+        ? { lat: h.approxLat, lng: h.approxLng, picked: false }
+        : null;
+
+    if (!target) {
+      return;
+    }
+
+    this.mapPoint = L.circleMarker([target.lat, target.lng], {
+      radius: 9,
+      color: target.picked ? "#1d4ed8" : "#15803d",
+      fillColor: target.picked ? "#60a5fa" : "#4ade80",
+      fillOpacity: 0.9,
+      weight: 2
+    }).addTo(this.map);
+  }
+
+  private deferMapRefresh() {
+    setTimeout(() => this.initMap(), 120);
   }
 
   private syncCarValidators(hasCar: boolean) {
@@ -576,5 +534,30 @@ export class HouseholdDetailPageComponent {
       }
       control.updateValueAndValidity({ emitEvent: false });
     }
+  }
+
+  private toNullableText(value: unknown) {
+    const text = String(value ?? "").trim();
+    return text.length ? text : null;
+  }
+
+  private toOptionalText(value: unknown) {
+    const text = String(value ?? "").trim();
+    return text.length ? text : undefined;
+  }
+
+  private toOptionalNumberInRange(value: unknown, min: number, max: number) {
+    const text = String(value ?? "").trim();
+    if (!text.length) {
+      return null;
+    }
+    const parsed = Number(text);
+    if (!Number.isFinite(parsed)) {
+      return null;
+    }
+    if (parsed < min || parsed > max) {
+      return null;
+    }
+    return parsed;
   }
 }

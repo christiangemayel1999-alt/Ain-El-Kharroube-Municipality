@@ -1,0 +1,346 @@
+<div class="shell" *ngIf="household() as h">
+  <mat-card>
+    <h2>{{ h.householdCode }}</h2>
+    <p>Section: {{ h.zone?.name || h.zoneId }}</p>
+    <button mat-stroked-button color="warn" type="button" *ngIf="canDeleteHousehold()" (click)="deleteHousehold()">
+      Delete family
+    </button>
+  </mat-card>
+
+  <mat-card>
+    <mat-tab-group>
+      <mat-tab label="Overview">
+        <div class="tab-content">
+          <p><strong>Map pin:</strong> {{ h.approxLat ?? "-" }}, {{ h.approxLng ?? "-" }} ({{ h.pinPrecisionM === 0 ? "Exact" : "+/-" + h.pinPrecisionM + "m" }})</p>
+          <p><strong>Pin label:</strong> {{ h.pinLabel || "-" }}</p>
+          <p><strong>First / Last name:</strong> {{ h.firstName || "-" }} {{ h.lastName || "" }}</p>
+          <p><strong>Father / Mother:</strong> {{ h.fatherName || "-" }} / {{ h.motherName || "-" }}</p>
+          <p><strong>Civil identity number:</strong> {{ h.civilIdentityNumber || "-" }}</p>
+          <p><strong>Phone number:</strong> {{ h.phoneNumber || "-" }}</p>
+          <p [ngClass]="h.safetyCheckStatus === 'CHECKED_SAFE' ? 'status-safe' : 'status-pending'">
+            <strong>Safety check:</strong> {{ h.safetyCheckStatus === "CHECKED_SAFE" ? "Checked and safe" : "Not checked (pending)" }}
+          </p>
+
+          <form *ngIf="canEditHousehold()" [formGroup]="householdForm" (ngSubmit)="saveHousehold()" class="edit-form">
+            <h3>Edit family record</h3>
+            <div class="grid">
+              <mat-form-field appearance="outline">
+                <mat-label>First name</mat-label>
+                <input matInput formControlName="firstName" />
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Last name</mat-label>
+                <input matInput formControlName="lastName" />
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Father name</mat-label>
+                <input matInput formControlName="fatherName" />
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Mother name</mat-label>
+                <input matInput formControlName="motherName" />
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Civil identity number</mat-label>
+                <input matInput formControlName="civilIdentityNumber" />
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Phone number</mat-label>
+                <input matInput formControlName="phoneNumber" />
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Map pin label</mat-label>
+                <input matInput formControlName="pinLabel" />
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Head of household</mat-label>
+                <input matInput formControlName="headName" />
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Origin area</mat-label>
+                <input matInput formControlName="originArea" />
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Nationality</mat-label>
+                <input matInput formControlName="nationality" />
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Preferred language</mat-label>
+                <input matInput formControlName="preferredLanguage" />
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Arrival date</mat-label>
+                <input matInput type="date" formControlName="arrivalDate" />
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Housing type</mat-label>
+                <mat-select formControlName="housingType">
+                  <mat-option value="RENTAL">RENTAL</mat-option>
+                  <mat-option value="HOST">HOST</mat-option>
+                  <mat-option value="SHELTER">SHELTER</mat-option>
+                  <mat-option value="OTHER">OTHER</mat-option>
+                </mat-select>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Case status</mat-label>
+                <mat-select formControlName="status">
+                  <mat-option value="ACTIVE">ACTIVE</mat-option>
+                  <mat-option value="MOVED_OUT">MOVED_OUT</mat-option>
+                  <mat-option value="CLOSED">CLOSED</mat-option>
+                </mat-select>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Case priority</mat-label>
+                <mat-select formControlName="casePriority">
+                  <mat-option value="LOW">LOW</mat-option>
+                  <mat-option value="MEDIUM">MEDIUM</mat-option>
+                  <mat-option value="HIGH">HIGH</mat-option>
+                </mat-select>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Has car?</mat-label>
+                <mat-select formControlName="hasCar">
+                  <mat-option [value]="false">No</mat-option>
+                  <mat-option [value]="true">Yes</mat-option>
+                </mat-select>
+              </mat-form-field>
+            </div>
+
+            <div class="grid" *ngIf="householdForm.get('hasCar')?.value">
+              <mat-form-field appearance="outline">
+                <mat-label>Car model</mat-label>
+                <input matInput formControlName="carModel" />
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Car color</mat-label>
+                <input matInput formControlName="carColor" />
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Car number</mat-label>
+                <input matInput formControlName="carPlate" />
+              </mat-form-field>
+            </div>
+
+            <div class="grid">
+              <mat-form-field appearance="outline">
+                <mat-label>Emergency contact name</mat-label>
+                <input matInput formControlName="emergencyName" />
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Emergency contact phone</mat-label>
+                <input matInput formControlName="emergencyPhone" />
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Emergency relation</mat-label>
+                <input matInput formControlName="emergencyRelation" />
+              </mat-form-field>
+            </div>
+
+            <button mat-raised-button color="primary" [disabled]="savingHousehold() || householdForm.invalid">
+              {{ savingHousehold() ? "Saving..." : "Save family changes" }}
+            </button>
+            <p class="msg ok" *ngIf="householdMessage()">{{ householdMessage() }}</p>
+            <p class="msg err" *ngIf="householdError()">{{ householdError() }}</p>
+          </form>
+
+          <div *ngIf="canEditHousehold()" class="map-block">
+            <h3>Set household location</h3>
+            <p class="muted">Click on the map to select a location, then save.</p>
+            <div id="household-location-map"></div>
+            <p class="picked" *ngIf="pickedCoordinate() as c">Selected: {{ c.lat | number:'1.5-5' }}, {{ c.lng | number:'1.5-5' }}</p>
+            <div class="button-row">
+              <button mat-raised-button color="primary" type="button" [disabled]="savingLocation() || !pickedCoordinate()" (click)="saveLocation()">
+                {{ savingLocation() ? "Saving..." : "Save map location" }}
+              </button>
+              <button mat-button type="button" [disabled]="!pickedCoordinate()" (click)="clearPickedCoordinate()">Clear selected</button>
+            </div>
+            <p class="msg ok" *ngIf="locationMessage()">{{ locationMessage() }}</p>
+            <p class="msg err" *ngIf="locationError()">{{ locationError() }}</p>
+          </div>
+        </div>
+      </mat-tab>
+
+      <mat-tab label="Members">
+        <div class="tab-content" *ngIf="canEditHousehold(); else membersReadOnly">
+          <form [formGroup]="membersForm" (ngSubmit)="saveMembers()" class="edit-form">
+            <h3>Family members</h3>
+            <div formArrayName="members">
+              <div class="member-card" *ngFor="let member of membersArray.controls; let i = index" [formGroupName]="i">
+                <div class="member-header">
+                  <h4>Member {{ i + 1 }} - {{ memberNamePreview(i) }}</h4>
+                  <div class="member-actions">
+                    <button mat-stroked-button type="button" (click)="moveMember(i, i - 1)" [disabled]="i === 0">Up</button>
+                    <button mat-stroked-button type="button" (click)="moveMember(i, i + 1)" [disabled]="i === membersArray.length - 1">Down</button>
+                    <button mat-stroked-button color="warn" type="button" (click)="removeMember(i)">Remove</button>
+                  </div>
+                </div>
+
+                <div class="grid">
+                  <mat-form-field appearance="outline">
+                    <mat-label>First name</mat-label>
+                    <input matInput formControlName="firstName" />
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Last name</mat-label>
+                    <input matInput formControlName="lastName" />
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Gender</mat-label>
+                    <mat-select formControlName="gender">
+                      <mat-option value="MALE">MALE</mat-option>
+                      <mat-option value="FEMALE">FEMALE</mat-option>
+                    </mat-select>
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Age</mat-label>
+                    <input matInput type="number" formControlName="age" />
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Year of birth</mat-label>
+                    <input matInput type="number" formControlName="yearOfBirth" />
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Relationship</mat-label>
+                    <input matInput formControlName="relationshipToHead" />
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Member safety check</mat-label>
+                    <mat-select formControlName="safetyCheckStatus">
+                      <mat-option value="PENDING">NOT CHECKED (PENDING)</mat-option>
+                      <mat-option value="CHECKED_SAFE">CHECKED AND SAFE</mat-option>
+                    </mat-select>
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Father name</mat-label>
+                    <input matInput formControlName="fatherName" />
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Mother name</mat-label>
+                    <input matInput formControlName="motherName" />
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Civil identity number</mat-label>
+                    <input matInput formControlName="civilIdentityNumber" />
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Phone number</mat-label>
+                    <input matInput formControlName="phoneNumber" />
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Origin area</mat-label>
+                    <input matInput formControlName="originArea" />
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Nationality</mat-label>
+                    <input matInput formControlName="nationality" />
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Has car?</mat-label>
+                    <mat-select formControlName="hasCar">
+                      <mat-option [value]="false">No</mat-option>
+                      <mat-option [value]="true">Yes</mat-option>
+                    </mat-select>
+                  </mat-form-field>
+                </div>
+
+                <div class="grid" *ngIf="member.get('hasCar')?.value">
+                  <mat-form-field appearance="outline">
+                    <mat-label>Car model</mat-label>
+                    <input matInput formControlName="carModel" />
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Car color</mat-label>
+                    <input matInput formControlName="carColor" />
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Car number</mat-label>
+                    <input matInput formControlName="carPlate" />
+                  </mat-form-field>
+                </div>
+              </div>
+            </div>
+
+            <div class="button-row">
+              <button mat-button type="button" (click)="addMember()">+ Add person</button>
+              <button mat-raised-button color="primary" [disabled]="savingMembers()">{{ savingMembers() ? "Saving..." : "Save members" }}</button>
+            </div>
+            <p class="msg ok" *ngIf="membersMessage()">{{ membersMessage() }}</p>
+            <p class="msg err" *ngIf="membersError()">{{ membersError() }}</p>
+          </form>
+        </div>
+      </mat-tab>
+
+      <mat-tab label="Contacts">
+        <div class="tab-content" *ngIf="canViewContacts(); else noContactAccess">
+          <form [formGroup]="contactForm" (ngSubmit)="saveContact()" class="edit-form">
+            <h3>Contact details</h3>
+            <div class="grid">
+              <mat-form-field appearance="outline">
+                <mat-label>Phone</mat-label>
+                <input matInput formControlName="phone" />
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>WhatsApp</mat-label>
+                <input matInput formControlName="whatsapp" />
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Consent</mat-label>
+                <mat-select formControlName="consent">
+                  <mat-option [value]="false">No</mat-option>
+                  <mat-option [value]="true">Yes</mat-option>
+                </mat-select>
+              </mat-form-field>
+            </div>
+            <button mat-raised-button color="primary" [disabled]="savingContact()">{{ savingContact() ? "Saving..." : "Save contact" }}</button>
+            <p class="msg ok" *ngIf="contactMessage()">{{ contactMessage() }}</p>
+          </form>
+        </div>
+      </mat-tab>
+
+      <mat-tab label="Rental">
+        <div class="tab-content">
+          <p *ngIf="!h.rentalAgreements?.length">No agreements.</p>
+          <div *ngFor="let ra of h.rentalAgreements">
+            <p><strong>{{ ra.agreementCode }}</strong> | {{ ra.status }} | {{ ra.monthlyRent }}</p>
+          </div>
+        </div>
+      </mat-tab>
+
+      <mat-tab label="Incidents">
+        <div class="tab-content">
+          <p *ngIf="!h.incidents?.length">No incidents.</p>
+          <div *ngFor="let incident of h.incidents">
+            <p>{{ incident.incidentCode }} | {{ incident.priority }} | {{ incident.status }}</p>
+          </div>
+        </div>
+      </mat-tab>
+    </mat-tab-group>
+  </mat-card>
+</div>
+
+<ng-template #noContactAccess>
+  <div class="tab-content">
+    <p>Contact details are restricted to ADMIN and CASE_WORKER.</p>
+  </div>
+</ng-template>
+
+<ng-template #membersReadOnly>
+  <div class="tab-content">
+    <p>Members can be edited by ADMIN and CASE_WORKER only.</p>
+  </div>
+</ng-template>

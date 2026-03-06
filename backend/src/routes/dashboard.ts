@@ -25,6 +25,7 @@ dashboardRouter.get(
       zones,
       householdsWithZone,
       mapHouseholds,
+      mapReferences,
       activeEmergencyPlan
     ] = await Promise.all([
       prisma.household.findMany({ where: { status: "ACTIVE" } }),
@@ -62,6 +63,7 @@ dashboardRouter.get(
           age5_17: true,
           age18_59: true,
           age60plus: true,
+          members: true,
           needs: true,
           casePriority: true,
           safetyCheckStatus: true,
@@ -70,6 +72,10 @@ dashboardRouter.get(
           carColor: true,
           carPlate: true
         }
+      }),
+      prisma.mapReference.findMany({
+        where: { visible: true },
+        orderBy: [{ type: "asc" }, { name: "asc" }]
       }),
       prisma.emergencyPlan.findFirst({
         where: { isActive: true },
@@ -131,6 +137,34 @@ dashboardRouter.get(
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([week, value]) => ({ week, value }));
 
+    const zoneLabelBuckets = new Map<string, { zone: string; lat: number; lng: number; households: number }>();
+    for (const household of householdsWithZone) {
+      if (household.approxLat == null || household.approxLng == null || !household.zone) {
+        continue;
+      }
+      const bucket = zoneLabelBuckets.get(household.zoneId);
+      if (bucket) {
+        bucket.lat += household.approxLat;
+        bucket.lng += household.approxLng;
+        bucket.households += 1;
+      } else {
+        zoneLabelBuckets.set(household.zoneId, {
+          zone: household.zone.name,
+          lat: household.approxLat,
+          lng: household.approxLng,
+          households: 1
+        });
+      }
+    }
+
+    const zoneLabels = Array.from(zoneLabelBuckets.entries()).map(([zoneId, bucket]) => ({
+      zoneId,
+      zone: bucket.zone,
+      lat: bucket.lat / bucket.households,
+      lng: bucket.lng / bucket.households,
+      households: bucket.households
+    }));
+
     return res.json({
       kpis: {
         totalHouseholdsActive: activeHouseholds.length,
@@ -165,6 +199,8 @@ dashboardRouter.get(
         ...h,
         needs: Array.isArray(h.needs) ? h.needs.map((n) => String(n)) : []
       })),
+      mapReferences,
+      zoneLabels,
       recentArrivals: recentArrivals.slice(-20).reverse(),
       emergencyPlan: activeEmergencyPlan
     });

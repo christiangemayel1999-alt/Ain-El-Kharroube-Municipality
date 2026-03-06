@@ -16,6 +16,7 @@ import { householdsRouter } from "./routes/households";
 import { housingUnitsRouter } from "./routes/housingUnits";
 import { incidentsRouter } from "./routes/incidents";
 import { landlordsRouter } from "./routes/landlords";
+import { mapReferencesRouter } from "./routes/mapReferences";
 import { notificationsRouter } from "./routes/notifications";
 import { rentalAgreementsRouter } from "./routes/rentalAgreements";
 import { usersRouter } from "./routes/users";
@@ -98,6 +99,7 @@ app.use("/rental-agreements", rentalAgreementsRouter);
 app.use("/incidents", incidentsRouter);
 app.use("/emergency-plans", emergencyPlansRouter);
 app.use("/notifications", notificationsRouter);
+app.use("/map-references", mapReferencesRouter);
 app.use("/dashboard", dashboardRouter);
 app.use("/exports", exportsRouter);
 

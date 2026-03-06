@@ -72,6 +72,19 @@ enum IncidentStatus {
   CLOSED
 }
 
+enum MapReferenceType {
+  ROAD
+  IMPORTANT_BUILDING
+  MUNICIPALITY_POINT
+  CHECKPOINT
+  SCHOOL
+  CHURCH_MOSQUE
+  SHELTER
+  WATER_POINT
+  LANDMARK
+  CUSTOM
+}
+
 model User {
   id           String      @id @default(uuid())
   email        String      @unique
@@ -300,5 +313,22 @@ model Notification {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, isRead, createdAt])
+}
+
+model MapReference {
+  id          String           @id @default(uuid())
+  name        String
+  type        MapReferenceType
+  description String?
+  lat         Float
+  lng         Float
+  color       String?
+  icon        String?
+  visible     Boolean          @default(true)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  @@index([type, visible])
+  @@index([visible])
 }
 

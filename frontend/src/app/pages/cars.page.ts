@@ -30,7 +30,7 @@ import { ApiService } from "../services/api.service";
         <form class="filters" [formGroup]="filterForm" (ngSubmit)="applyFilters()">
           <mat-form-field appearance="outline">
             <mat-label>Search</mat-label>
-            <input matInput formControlName="q" placeholder="Plate, model, driver, civil ID" />
+            <input matInput formControlName="q" placeholder="Plate, model, member, civil ID" />
           </mat-form-field>
 
           <mat-form-field appearance="outline">
@@ -64,7 +64,8 @@ import { ApiService } from "../services/api.service";
                   <th>Plate</th>
                   <th>Model</th>
                   <th>Color</th>
-                  <th>Driver</th>
+                  <th>Member</th>
+                  <th>Relationship</th>
                   <th>Section</th>
                 </tr>
               </thead>
@@ -72,12 +73,13 @@ import { ApiService } from "../services/api.service";
                 <tr
                   *ngFor="let car of cars()"
                   (click)="selectCar(car)"
-                  [class.active]="selectedCar()?.householdId === car.householdId"
+                  [class.active]="selectedCar()?.recordId === car.recordId"
                 >
                   <td>{{ car.carPlate || "-" }}</td>
                   <td>{{ car.carModel || "-" }}</td>
                   <td>{{ car.carColor || "-" }}</td>
-                  <td>{{ displayDriverName(car) }}</td>
+                  <td>{{ displayMemberName(car) }}</td>
+                  <td>{{ car.memberRelationshipToHead || "-" }}</td>
                   <td>{{ car.zone.name || "-" }}</td>
                 </tr>
               </tbody>
@@ -86,13 +88,15 @@ import { ApiService } from "../services/api.service";
           </div>
 
           <mat-card class="detail-card" *ngIf="selectedCar() as car">
-            <h3>Driver Details</h3>
+            <h3>Member Car Details</h3>
             <p><strong>Household:</strong> {{ car.householdCode }}</p>
-            <p><strong>Name:</strong> {{ displayDriverName(car) }}</p>
-            <p><strong>Father:</strong> {{ car.fatherName || "-" }}</p>
-            <p><strong>Mother:</strong> {{ car.motherName || "-" }}</p>
-            <p><strong>Civil ID:</strong> {{ car.civilIdentityNumber || "-" }}</p>
-            <p><strong>Phone:</strong> {{ car.phoneNumber || "-" }}</p>
+            <p><strong>Member #:</strong> {{ car.memberIndex }}</p>
+            <p><strong>Name:</strong> {{ displayMemberName(car) }}</p>
+            <p><strong>Father:</strong> {{ car.memberFatherName || "-" }}</p>
+            <p><strong>Mother:</strong> {{ car.memberMotherName || "-" }}</p>
+            <p><strong>Civil ID:</strong> {{ car.memberCivilIdentityNumber || "-" }}</p>
+            <p><strong>Phone:</strong> {{ car.memberPhoneNumber || "-" }}</p>
+            <p><strong>Relationship:</strong> {{ car.memberRelationshipToHead || "-" }}</p>
             <p><strong>Family origin:</strong> {{ car.originArea || "-" }}</p>
             <p [ngClass]="car.safetyCheckStatus === 'CHECKED_SAFE' ? 'status-safe' : 'status-pending'">
               <strong>Safety check:</strong>
@@ -218,14 +222,14 @@ export class CarsPageComponent {
     this.selectedCar.set(car);
   }
 
-  displayDriverName(car: CarRecord) {
-    const first = String(car.firstName ?? "").trim();
-    const last = String(car.lastName ?? "").trim();
+  displayMemberName(car: CarRecord) {
+    const first = String(car.memberFirstName ?? "").trim();
+    const last = String(car.memberLastName ?? "").trim();
     const full = `${first} ${last}`.trim();
     if (full) {
       return full;
     }
-    return car.headName || "-";
+    return car.memberName || "-";
   }
 
   private loadCars() {
@@ -252,7 +256,7 @@ export class CarsPageComponent {
         this.selectedCar.set(rows[0] ?? null);
         return;
       }
-      const next = rows.find((row) => row.householdId === current.householdId) ?? rows[0] ?? null;
+      const next = rows.find((row) => row.recordId === current.recordId) ?? rows[0] ?? null;
       this.selectedCar.set(next);
     });
   }

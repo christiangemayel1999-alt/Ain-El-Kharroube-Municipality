@@ -1,8 +1,10 @@
 import { CasePriority, FamilyCheckStatus, HousingType, HouseholdStatus, Role } from "@prisma/client";
 import { Router } from "express";
+import multer from "multer";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { requireRoles } from "../middleware/rbac";
+import { importHouseholdsWorkbook } from "../services/householdImport";
 import { validateBody, validateQuery } from "../middleware/validate";
 import { writeAudit } from "../services/audit";
 import { asyncHandler } from "../utils/asyncHandler";
@@ -34,6 +36,7 @@ const householdMemberSchema = z
     pregnantOrLactating: z.boolean().default(false),
     schoolEnrollment: z.enum(["ENROLLED", "NOT_ENROLLED", "NA"]).default("NA"),
     employmentStatus: z.enum(["EMPLOYED", "UNEMPLOYED", "NA"]).default("NA"),
+    safetyCheckStatus: z.nativeEnum(FamilyCheckStatus).default(FamilyCheckStatus.PENDING),
     hasCar: z.boolean().default(false),
     carModel: z.string().trim().max(60).optional().nullable(),
     carColor: z.string().trim().max(40).optional().nullable(),
@@ -54,6 +57,36 @@ const householdMemberSchema = z
       });
     }
   });
+
+const householdMemberPatchSchema = z.object({
+  name: z.string().trim().max(120).optional().nullable(),
+  age: z.coerce.number().int().min(0).max(120).optional().nullable(),
+  gender: z.enum(["MALE", "FEMALE"]).optional().nullable(),
+  firstName: z.string().trim().max(80).optional().nullable(),
+  lastName: z.string().trim().max(80).optional().nullable(),
+  fatherName: z.string().trim().max(80).optional().nullable(),
+  motherName: z.string().trim().max(80).optional().nullable(),
+  civilIdentityNumber: z.string().trim().max(40).optional().nullable(),
+  phoneNumber: z.string().trim().max(40).optional().nullable(),
+  originArea: z.string().trim().max(160).optional().nullable(),
+  nationality: z.string().trim().max(60).optional().nullable(),
+  relationshipToHead: z.string().trim().max(50).optional().nullable(),
+  dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
+  yearOfBirth: z.coerce.number().int().min(1900).max(2100).optional().nullable(),
+  idDocStatus: z.enum(["HAS_ID", "NO_ID", "UNKNOWN"]).optional().nullable(),
+  idDocType: z.string().trim().max(30).optional().nullable(),
+  idDocLast4: z.string().regex(/^\d{4}$/).optional().nullable(),
+  hasDisability: z.boolean().optional().nullable(),
+  hasChronicCondition: z.boolean().optional().nullable(),
+  pregnantOrLactating: z.boolean().optional().nullable(),
+  schoolEnrollment: z.enum(["ENROLLED", "NOT_ENROLLED", "NA"]).optional().nullable(),
+  employmentStatus: z.enum(["EMPLOYED", "UNEMPLOYED", "NA"]).optional().nullable(),
+  safetyCheckStatus: z.nativeEnum(FamilyCheckStatus).optional().nullable(),
+  hasCar: z.boolean().optional().nullable(),
+  carModel: z.string().trim().max(60).optional().nullable(),
+  carColor: z.string().trim().max(40).optional().nullable(),
+  carPlate: z.string().trim().max(30).optional().nullable()
+});
 
 const householdSchemaBase = z.object({
   firstName: z.string().trim().min(1).max(80),
@@ -110,14 +143,20 @@ const householdSchema = householdSchemaBase.superRefine((data, ctx) => {
   }
 });
 
-const householdPatchSchema = householdSchemaBase.partial().superRefine((data, ctx) => {
-  if (data.hasCar === true && (!data.carModel || !data.carColor || !data.carPlate)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "carModel, carColor and carPlate are required when hasCar is true"
-    });
-  }
-});
+const householdPatchSchema = householdSchemaBase
+  .omit({ members: true })
+  .partial()
+  .extend({
+    members: z.array(householdMemberPatchSchema).max(30).optional()
+  })
+  .superRefine((data, ctx) => {
+    if (data.hasCar === true && (!data.carModel || !data.carColor || !data.carPlate)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "carModel, carColor and carPlate are required when hasCar is true"
+      });
+    }
+  });
 
 const householdQuerySchema = z.object({
   zoneId: z.string().uuid().optional(),
@@ -135,6 +174,7 @@ const contactSchema = z.object({
 });
 
 type HouseholdMemberInput = z.infer<typeof householdMemberSchema>;
+type HouseholdMemberPatchInput = z.infer<typeof householdMemberPatchSchema>;
 type HouseholdPayload = z.infer<typeof householdSchema>;
 
 function summarizeMembers(members: HouseholdMemberInput[]) {
@@ -169,6 +209,53 @@ function summarizeMembers(members: HouseholdMemberInput[]) {
   return summary;
 }
 
+function resolveFamilySafetyFromMembers(members: HouseholdMemberInput[]) {
+  if (!members.length) {
+    return FamilyCheckStatus.PENDING;
+  }
+
+  const allCheckedSafe = members.every((member) => member.safetyCheckStatus === FamilyCheckStatus.CHECKED_SAFE);
+  return allCheckedSafe ? FamilyCheckStatus.CHECKED_SAFE : FamilyCheckStatus.PENDING;
+}
+
+function normalizeMemberPatch(member: HouseholdMemberPatchInput, index: number): HouseholdMemberInput {
+  const firstName = member.firstName?.trim() || "";
+  const lastName = member.lastName?.trim() || "";
+  const derivedName = `${firstName} ${lastName}`.trim();
+  const fallbackName = `Member ${index + 1}`;
+  const hasCar = member.hasCar === true;
+
+  return {
+    name: member.name?.trim() || derivedName || fallbackName,
+    age: Number.isFinite(Number(member.age)) ? Number(member.age) : 0,
+    gender: member.gender === "FEMALE" ? "FEMALE" : "MALE",
+    firstName,
+    lastName,
+    fatherName: member.fatherName?.trim() || "",
+    motherName: member.motherName?.trim() || "",
+    civilIdentityNumber: member.civilIdentityNumber?.trim() || "",
+    phoneNumber: member.phoneNumber?.trim() || "",
+    originArea: member.originArea?.trim() || "",
+    nationality: member.nationality?.trim() || "",
+    relationshipToHead: member.relationshipToHead?.trim() || null,
+    dateOfBirth: member.dateOfBirth ?? null,
+    yearOfBirth: member.yearOfBirth ?? null,
+    idDocStatus: member.idDocStatus ?? "UNKNOWN",
+    idDocType: member.idDocType?.trim() || null,
+    idDocLast4: member.idDocLast4 ?? null,
+    hasDisability: member.hasDisability === true,
+    hasChronicCondition: member.hasChronicCondition === true,
+    pregnantOrLactating: member.pregnantOrLactating === true,
+    schoolEnrollment: member.schoolEnrollment ?? "NA",
+    employmentStatus: member.employmentStatus ?? "NA",
+    safetyCheckStatus: member.safetyCheckStatus ?? FamilyCheckStatus.PENDING,
+    hasCar,
+    carModel: hasCar ? member.carModel?.trim() || null : null,
+    carColor: hasCar ? member.carColor?.trim() || null : null,
+    carPlate: hasCar ? member.carPlate?.trim() || null : null
+  };
+}
+
 function resolvePin(lat: number, lng: number, pinPrecisionM: number) {
   if (pinPrecisionM > 0) {
     return snapToGrid(lat, lng, pinPrecisionM);
@@ -182,6 +269,10 @@ function resolvePin(lat: number, lng: number, pinPrecisionM: number) {
 }
 
 export const householdsRouter = Router();
+const importUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 }
+});
 
 householdsRouter.get(
   "/",
@@ -217,6 +308,7 @@ householdsRouter.post(
   asyncHandler(async (req, res) => {
     const payload = req.body as HouseholdPayload;
     const memberSummary = summarizeMembers(payload.members);
+    const familySafetyStatus = resolveFamilySafetyFromMembers(payload.members);
     const normalizedHeadName =
       (payload.headName ? payload.headName.trim() : `${payload.firstName} ${payload.lastName}`.trim()) || null;
 
@@ -268,7 +360,7 @@ householdsRouter.post(
             needs: payload.needs,
             notes: payload.notes ?? null,
             members: payload.members,
-            safetyCheckStatus: payload.safetyCheckStatus,
+            safetyCheckStatus: familySafetyStatus,
             casePriority: payload.casePriority,
             nationality: payload.nationality ?? null,
             preferredLanguage: payload.preferredLanguage ?? null,
@@ -279,9 +371,9 @@ householdsRouter.post(
             carModel: payload.hasCar ? payload.carModel ?? null : null,
             carColor: payload.hasCar ? payload.carColor ?? null : null,
             carPlate: payload.hasCar ? payload.carPlate ?? null : null,
-            isVerified: payload.safetyCheckStatus === FamilyCheckStatus.CHECKED_SAFE || payload.isVerified,
-            checkedByUserId: payload.safetyCheckStatus === FamilyCheckStatus.CHECKED_SAFE ? req.user!.id : null,
-            checkedAt: payload.safetyCheckStatus === FamilyCheckStatus.CHECKED_SAFE ? new Date() : null,
+            isVerified: familySafetyStatus === FamilyCheckStatus.CHECKED_SAFE || payload.isVerified,
+            checkedByUserId: familySafetyStatus === FamilyCheckStatus.CHECKED_SAFE ? req.user!.id : null,
+            checkedAt: familySafetyStatus === FamilyCheckStatus.CHECKED_SAFE ? new Date() : null,
             approxLat: snapped?.approxLat,
             approxLng: snapped?.approxLng,
             pinPrecisionM: snapped?.pinPrecisionM ?? payload.pinPrecisionM
@@ -292,6 +384,26 @@ householdsRouter.post(
 
     await writeAudit(req.user!.id, "CREATE", "Household", household.id);
     return res.status(201).json(household);
+  })
+);
+
+householdsRouter.post(
+  "/import-excel",
+  requireRoles(Role.ADMIN, Role.CASE_WORKER),
+  importUpload.single("file"),
+  asyncHandler(async (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({ message: "Excel file is required (field name: file)." });
+    }
+
+    const filename = (req.file.originalname || "").toLowerCase();
+    if (!filename.endsWith(".xlsx") && !filename.endsWith(".xls")) {
+      return res.status(400).json({ message: "Only .xlsx or .xls files are supported." });
+    }
+
+    const summary = await importHouseholdsWorkbook(req.file.buffer);
+    await writeAudit(req.user!.id, "IMPORT", "HouseholdWorkbook", `rows:${summary.householdsImported}`);
+    return res.json(summary);
   })
 );
 
@@ -345,8 +457,10 @@ householdsRouter.patch(
       return res.status(404).json({ message: "Household not found" });
     }
 
-    const members = payload.members ?? [];
-    const memberSummary = payload.members ? summarizeMembers(members) : null;
+    const normalizedMembers = payload.members
+      ? payload.members.map((member, index) => normalizeMemberPatch(member, index))
+      : null;
+    const memberSummary = normalizedMembers ? summarizeMembers(normalizedMembers) : null;
 
     const pinPrecisionM = payload.pinPrecisionM ?? 0;
     const snapped =
@@ -375,6 +489,16 @@ householdsRouter.patch(
 
     delete data.clickedLat;
     delete data.clickedLng;
+    delete data.safetyCheckStatus;
+
+    if (normalizedMembers) {
+      data.members = normalizedMembers;
+      const familySafetyStatus = resolveFamilySafetyFromMembers(normalizedMembers);
+      data.safetyCheckStatus = familySafetyStatus;
+      data.isVerified = familySafetyStatus === FamilyCheckStatus.CHECKED_SAFE;
+      data.checkedByUserId = familySafetyStatus === FamilyCheckStatus.CHECKED_SAFE ? req.user!.id : null;
+      data.checkedAt = familySafetyStatus === FamilyCheckStatus.CHECKED_SAFE ? new Date() : null;
+    }
 
     if (payload.hasCar === false) {
       data.carModel = null;
@@ -386,13 +510,6 @@ householdsRouter.patch(
       return res.status(400).json({
         message: "carModel, carColor and carPlate are required when hasCar is true"
       });
-    }
-
-    if (payload.safetyCheckStatus) {
-      const checkedSafe = payload.safetyCheckStatus === FamilyCheckStatus.CHECKED_SAFE;
-      data.isVerified = checkedSafe;
-      data.checkedByUserId = checkedSafe ? req.user!.id : null;
-      data.checkedAt = checkedSafe ? new Date() : null;
     }
 
     if (payload.arrivalDate) {

@@ -13,6 +13,22 @@ const carsQuerySchema = z.object({
   safetyCheckStatus: z.enum(["PENDING", "CHECKED_SAFE"]).optional()
 });
 
+function asMemberArray(value: unknown) {
+  return Array.isArray(value) ? value : [];
+}
+
+function asObject(value: unknown) {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+}
+
+function asString(value: unknown) {
+  return value === null || value === undefined ? "" : String(value).trim();
+}
+
+function asBoolean(value: unknown) {
+  return value === true;
+}
+
 export const carsRouter = Router();
 
 carsRouter.get(
@@ -23,51 +39,95 @@ carsRouter.get(
     const query = req.query as unknown as z.infer<typeof carsQuerySchema>;
     const search = query.q?.trim();
 
-    const rows = await prisma.household.findMany({
+    const households = await prisma.household.findMany({
       where: {
-        hasCar: true,
-        carModel: query.model ? { contains: query.model, mode: "insensitive" } : undefined,
-        carColor: query.color ? { contains: query.color, mode: "insensitive" } : undefined,
-        safetyCheckStatus: query.safetyCheckStatus,
-        OR: search
-          ? [
-              { householdCode: { contains: search, mode: "insensitive" } },
-              { firstName: { contains: search, mode: "insensitive" } },
-              { lastName: { contains: search, mode: "insensitive" } },
-              { headName: { contains: search, mode: "insensitive" } },
-              { civilIdentityNumber: { contains: search, mode: "insensitive" } },
-              { carPlate: { contains: search, mode: "insensitive" } },
-              { carModel: { contains: search, mode: "insensitive" } },
-              { carColor: { contains: search, mode: "insensitive" } }
-            ]
-          : undefined
+        safetyCheckStatus: query.safetyCheckStatus
       },
       include: {
         zone: true
       },
-      orderBy: [{ carPlate: "asc" }, { createdAt: "desc" }]
+      orderBy: [{ createdAt: "desc" }]
     });
 
-    return res.json(
-      rows.map((row) => ({
-        householdId: row.id,
-        householdCode: row.householdCode,
-        firstName: row.firstName,
-        lastName: row.lastName,
-        fatherName: row.fatherName,
-        motherName: row.motherName,
-        headName: row.headName,
-        civilIdentityNumber: row.civilIdentityNumber,
-        phoneNumber: row.phoneNumber,
-        originArea: row.originArea,
-        safetyCheckStatus: row.safetyCheckStatus,
-        casePriority: row.casePriority,
-        carModel: row.carModel,
-        carColor: row.carColor,
-        carPlate: row.carPlate,
-        zone: row.zone,
-        createdAt: row.createdAt
-      }))
-    );
+    const rows = households.flatMap((household) => {
+      const members = asMemberArray(household.members);
+      return members
+        .map((member, memberIndex) => ({ member: asObject(member), memberIndex }))
+        .filter(({ member }) => asBoolean(member.hasCar))
+        .map(({ member, memberIndex }) => ({
+          recordId: `${household.id}:${memberIndex}`,
+          householdId: household.id,
+          householdCode: household.householdCode,
+          firstName: household.firstName,
+          lastName: household.lastName,
+          fatherName: household.fatherName,
+          motherName: household.motherName,
+          headName: household.headName,
+          civilIdentityNumber: household.civilIdentityNumber,
+          phoneNumber: household.phoneNumber,
+          originArea: household.originArea,
+          safetyCheckStatus: household.safetyCheckStatus,
+          casePriority: household.casePriority,
+          carModel: asString(member.carModel) || null,
+          carColor: asString(member.carColor) || null,
+          carPlate: asString(member.carPlate) || null,
+          memberIndex: memberIndex + 1,
+          memberName: asString(member.name) || null,
+          memberFirstName: asString(member.firstName) || null,
+          memberLastName: asString(member.lastName) || null,
+          memberFatherName: asString(member.fatherName) || null,
+          memberMotherName: asString(member.motherName) || null,
+          memberCivilIdentityNumber: asString(member.civilIdentityNumber) || null,
+          memberPhoneNumber: asString(member.phoneNumber) || null,
+          memberRelationshipToHead: asString(member.relationshipToHead) || null,
+          zone: household.zone,
+          createdAt: household.createdAt
+        }));
+    });
+
+    const filtered = rows.filter((row) => {
+      if (query.model && !(row.carModel || "").toLowerCase().includes(query.model.toLowerCase())) {
+        return false;
+      }
+
+      if (query.color && !(row.carColor || "").toLowerCase().includes(query.color.toLowerCase())) {
+        return false;
+      }
+
+      if (!search) {
+        return true;
+      }
+
+      const haystack = [
+        row.householdCode,
+        row.firstName ?? "",
+        row.lastName ?? "",
+        row.headName ?? "",
+        row.civilIdentityNumber ?? "",
+        row.memberName ?? "",
+        row.memberFirstName ?? "",
+        row.memberLastName ?? "",
+        row.memberCivilIdentityNumber ?? "",
+        row.memberPhoneNumber ?? "",
+        row.carPlate ?? "",
+        row.carModel ?? "",
+        row.carColor ?? ""
+      ]
+        .join(" ")
+        .toLowerCase();
+
+      return haystack.includes(search.toLowerCase());
+    });
+
+    filtered.sort((a, b) => {
+      const plateA = a.carPlate ?? "";
+      const plateB = b.carPlate ?? "";
+      if (plateA !== plateB) {
+        return plateA.localeCompare(plateB, undefined, { numeric: true, sensitivity: "base" });
+      }
+      return a.householdCode.localeCompare(b.householdCode, undefined, { numeric: true, sensitivity: "base" });
+    });
+
+    return res.json(filtered);
   })
 );

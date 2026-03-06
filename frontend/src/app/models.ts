@@ -14,6 +14,32 @@ export interface Zone {
   name: string;
 }
 
+export type MapReferenceType =
+  | "ROAD"
+  | "IMPORTANT_BUILDING"
+  | "MUNICIPALITY_POINT"
+  | "CHECKPOINT"
+  | "SCHOOL"
+  | "CHURCH_MOSQUE"
+  | "SHELTER"
+  | "WATER_POINT"
+  | "LANDMARK"
+  | "CUSTOM";
+
+export interface MapReference {
+  id: string;
+  name: string;
+  type: MapReferenceType;
+  description: string | null;
+  lat: number;
+  lng: number;
+  color: string | null;
+  icon: string | null;
+  visible: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface HouseholdMember {
   name: string;
   age: number;
@@ -37,6 +63,7 @@ export interface HouseholdMember {
   pregnantOrLactating?: boolean;
   schoolEnrollment?: "ENROLLED" | "NOT_ENROLLED" | "NA";
   employmentStatus?: "EMPLOYED" | "UNEMPLOYED" | "NA";
+  safetyCheckStatus?: "PENDING" | "CHECKED_SAFE";
   hasCar?: boolean;
   carModel?: string | null;
   carColor?: string | null;
@@ -143,6 +170,7 @@ export interface DashboardSummary {
     age5_17: number;
     age18_59: number;
     age60plus: number;
+    members?: HouseholdMember[];
     needs: string[];
     casePriority: "LOW" | "MEDIUM" | "HIGH";
     safetyCheckStatus: "PENDING" | "CHECKED_SAFE";
@@ -150,6 +178,14 @@ export interface DashboardSummary {
     carModel: string | null;
     carColor: string | null;
     carPlate: string | null;
+  }>;
+  mapReferences: MapReference[];
+  zoneLabels: Array<{
+    zoneId: string;
+    zone: string;
+    lat: number;
+    lng: number;
+    households: number;
   }>;
   recentArrivals: Household[];
   emergencyPlan?: EmergencyPlan | null;
@@ -193,6 +229,7 @@ export interface NotificationItem {
 }
 
 export interface CarRecord {
+  recordId: string;
   householdId: string;
   householdCode: string;
   firstName: string | null;
@@ -208,7 +245,32 @@ export interface CarRecord {
   carModel: string | null;
   carColor: string | null;
   carPlate: string | null;
+  memberIndex: number;
+  memberName: string | null;
+  memberFirstName: string | null;
+  memberLastName: string | null;
+  memberFatherName: string | null;
+  memberMotherName: string | null;
+  memberCivilIdentityNumber: string | null;
+  memberPhoneNumber: string | null;
+  memberRelationshipToHead: string | null;
   zone: Zone;
   createdAt: string;
+}
+
+export interface HouseholdImportIssue {
+  rowNumber: number;
+  message: string;
+}
+
+export interface HouseholdImportSummary {
+  householdsImported: number;
+  householdsCreated: number;
+  householdsUpdated: number;
+  membersImported: number;
+  rowsWithWarnings: number;
+  rowsSkipped: number;
+  warnings: HouseholdImportIssue[];
+  skipped: HouseholdImportIssue[];
 }
 

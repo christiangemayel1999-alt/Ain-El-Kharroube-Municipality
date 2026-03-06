@@ -14,7 +14,7 @@ import { MatSidenavModule } from "@angular/material/sidenav";
 import { MatSlideToggleModule } from "@angular/material/slide-toggle";
 import { BaseChartDirective } from "ng2-charts";
 import * as L from "leaflet";
-import { DashboardSummary, EmergencyPlan, NotificationItem, Zone } from "../models";
+import { DashboardSummary, EmergencyPlan, MapReference, MapReferenceType, NotificationItem, Zone } from "../models";
 import { ApiService } from "../services/api.service";
 import { AuthService } from "../services/auth.service";
 import { Chart } from "chart.js";
@@ -27,6 +27,13 @@ type HoveredPolicePoint = {
   lat: number;
   lng: number;
   planName: string;
+};
+
+type ReferenceCategoryOption = {
+  value: MapReferenceType;
+  label: string;
+  shortIcon: string;
+  defaultColor: string;
 };
 
 type ReportZoneRow = {
@@ -53,6 +60,19 @@ type ReportVm = {
   topZoneByIndividuals: string | null;
   zoneRows: ReportZoneRow[];
 };
+
+const referenceCategoryOptions: ReferenceCategoryOption[] = [
+  { value: "ROAD", label: "Road", shortIcon: "R", defaultColor: "#0ea5e9" },
+  { value: "IMPORTANT_BUILDING", label: "Important building", shortIcon: "B", defaultColor: "#8b5cf6" },
+  { value: "MUNICIPALITY_POINT", label: "Municipality point", shortIcon: "M", defaultColor: "#f97316" },
+  { value: "CHECKPOINT", label: "Checkpoint", shortIcon: "C", defaultColor: "#dc2626" },
+  { value: "SCHOOL", label: "School", shortIcon: "S", defaultColor: "#2563eb" },
+  { value: "CHURCH_MOSQUE", label: "Church / mosque", shortIcon: "CM", defaultColor: "#7c3aed" },
+  { value: "SHELTER", label: "Shelter", shortIcon: "SH", defaultColor: "#16a34a" },
+  { value: "WATER_POINT", label: "Water point", shortIcon: "W", defaultColor: "#0891b2" },
+  { value: "LANDMARK", label: "Landmark", shortIcon: "L", defaultColor: "#ca8a04" },
+  { value: "CUSTOM", label: "Custom", shortIcon: "*", defaultColor: "#475569" }
+];
 
 @Component({
   selector: "app-dashboard-page",
@@ -168,14 +188,6 @@ type ReportVm = {
               </mat-form-field>
 
               <mat-form-field appearance="outline">
-                <mat-label>Family safety check</mat-label>
-                <mat-select formControlName="safetyCheckStatus">
-                  <mat-option value="PENDING">NOT CHECKED (PENDING)</mat-option>
-                  <mat-option value="CHECKED_SAFE">CHECKED AND SAFE</mat-option>
-                </mat-select>
-              </mat-form-field>
-
-              <mat-form-field appearance="outline">
                 <mat-label>Arrival date</mat-label>
                 <input matInput type="date" formControlName="arrivalDate" />
               </mat-form-field>
@@ -270,6 +282,14 @@ type ReportVm = {
                     <mat-form-field appearance="outline">
                       <mat-label>Relation to head</mat-label>
                       <input matInput formControlName="relationshipToHead" />
+                    </mat-form-field>
+
+                    <mat-form-field appearance="outline">
+                      <mat-label>Member safety check</mat-label>
+                      <mat-select formControlName="safetyCheckStatus">
+                        <mat-option value="PENDING">NOT CHECKED (PENDING)</mat-option>
+                        <mat-option value="CHECKED_SAFE">CHECKED AND SAFE</mat-option>
+                      </mat-select>
                     </mat-form-field>
 
                     <mat-form-field appearance="outline">
@@ -408,6 +428,21 @@ type ReportVm = {
               <div id="dashboard-map"></div>
               <p class="muted">Satellite view centered on Ain El Kharroube (33.93444, 35.69972)</p>
               <div class="overlay-toggles">
+                <mat-slide-toggle [checked]="householdPinsEnabled()" (change)="setHouseholdPinsEnabled($event.checked)">
+                  Household pins
+                </mat-slide-toggle>
+                <mat-slide-toggle [checked]="householdLabelsEnabled()" (change)="setHouseholdLabelsEnabled($event.checked)">
+                  Household labels
+                </mat-slide-toggle>
+                <mat-slide-toggle [checked]="mapReferencesEnabled()" (change)="setMapReferencesEnabled($event.checked)">
+                  References
+                </mat-slide-toggle>
+                <mat-slide-toggle [checked]="referenceLabelsEnabled()" (change)="setReferenceLabelsEnabled($event.checked)">
+                  Reference labels
+                </mat-slide-toggle>
+                <mat-slide-toggle [checked]="zoneLabelsEnabled()" (change)="setZoneLabelsEnabled($event.checked)">
+                  Zone labels
+                </mat-slide-toggle>
                 <mat-slide-toggle [checked]="heatmapEnabled()" (change)="setHeatmapEnabled($event.checked)">
                   Heat map
                 </mat-slide-toggle>
@@ -415,7 +450,55 @@ type ReportVm = {
                   Zone guide lines
                 </mat-slide-toggle>
               </div>
-              <p class="muted">Heat map shows household density and priority. Zone lines are visual guides for Section 1..10.</p>
+              <p class="muted">
+                Heat map shows household density and priority. References include roads/buildings/checkpoints. Labels appear automatically when zooming in.
+              </p>
+              <div class="reference-search" *ngIf="summary()">
+                <div class="reference-search-row">
+                  <mat-form-field appearance="outline" class="reference-search-field">
+                    <mat-label>Find family/member on map</mat-label>
+                    <input
+                      #searchFamilyInput
+                      matInput
+                      [value]="householdSearchQuery()"
+                      (input)="setHouseholdSearchQuery(searchFamilyInput.value)"
+                      placeholder="Search by family code, name, phone, or member name"
+                    />
+                  </mat-form-field>
+                  <button mat-stroked-button type="button" (click)="clearHouseholdSearch()" [disabled]="!householdSearchQuery().trim().length">
+                    Clear
+                  </button>
+                </div>
+                <div class="reference-search-results" *ngIf="householdSearchQuery().trim().length > 0">
+                  <button mat-button type="button" class="reference-hit" *ngFor="let marker of searchedHouseholdMarkers().slice(0, 8)" (click)="focusHouseholdOnMap(marker)">
+                    {{ marker.householdCode }} - {{ marker.headName || ((marker.firstName || '-') + ' ' + (marker.lastName || '')) }}
+                  </button>
+                  <p class="muted" *ngIf="!searchedHouseholdMarkers().length">No matching family/member found.</p>
+                </div>
+              </div>
+              <div class="reference-search" *ngIf="summary()">
+                <div class="reference-search-row">
+                  <mat-form-field appearance="outline" class="reference-search-field">
+                    <mat-label>Find reference on map</mat-label>
+                    <input
+                      #searchReferenceInput
+                      matInput
+                      [value]="referenceSearchQuery()"
+                      (input)="setReferenceSearchQuery(searchReferenceInput.value)"
+                      placeholder="Search by name, category, or note"
+                    />
+                  </mat-form-field>
+                  <button mat-stroked-button type="button" (click)="clearReferenceSearch()" [disabled]="!referenceSearchQuery().trim().length">
+                    Clear
+                  </button>
+                </div>
+                <div class="reference-search-results" *ngIf="referenceSearchQuery().trim().length > 0">
+                  <button mat-button type="button" class="reference-hit" *ngFor="let reference of searchedMapReferences().slice(0, 8)" (click)="focusReferenceOnMap(reference)">
+                    {{ reference.name }} - {{ mapReferenceTypeLabel(reference.type) }}
+                  </button>
+                  <p class="muted" *ngIf="!searchedMapReferences().length">No matching reference found.</p>
+                </div>
+              </div>
               <p class="muted" *ngIf="borderDrawing()">
                 Border drawing mode is active: click map points around the village, then press "Finish Border".
                 Points: {{ borderPointsCount() }}
@@ -464,6 +547,19 @@ type ReportVm = {
                 <p><strong>Post:</strong> {{ post.label }}</p>
                 <p><strong>Officers:</strong> {{ post.officersCount }}</p>
                 <p><strong>Coordinates:</strong> {{ post.lat | number:'1.5-5' }}, {{ post.lng | number:'1.5-5' }}</p>
+              </mat-card>
+              <mat-card class="hover-family-card" *ngIf="activeMapReference() as reference">
+                <div class="card-title-row">
+                  <h3>{{ selectedMapReference()?.id === reference.id ? 'Selected reference' : 'Hovered reference' }}</h3>
+                  <button mat-button type="button" *ngIf="selectedMapReference()?.id === reference.id" (click)="clearSelectedMapReference()">
+                    Clear reference
+                  </button>
+                </div>
+                <p><strong>Name:</strong> {{ reference.name }}</p>
+                <p><strong>Category:</strong> {{ mapReferenceTypeLabel(reference.type) }}</p>
+                <p><strong>Description:</strong> {{ reference.description || '-' }}</p>
+                <p><strong>Coordinates:</strong> {{ reference.lat | number:'1.5-5' }}, {{ reference.lng | number:'1.5-5' }}</p>
+                <p><strong>Visibility:</strong> {{ reference.visible ? 'Visible on map' : 'Hidden' }}</p>
               </mat-card>
             </mat-card>
 
@@ -571,6 +667,94 @@ type ReportVm = {
                     <button mat-button type="button" (click)="resetEmergencyPlanForm()">Reset</button>
                   </div>
                 </form>
+              </div>
+
+              <mat-divider *ngIf="isAdminUser()"></mat-divider>
+              <div class="reference-panel" *ngIf="isAdminUser()">
+                <h3>Map References</h3>
+                <p class="muted">Create landmarks, checkpoints, roads, and orientation points. Click map to place coordinates quickly.</p>
+                <p class="success-text" *ngIf="referenceSuccess()">{{ referenceSuccess() }}</p>
+                <p class="error-text" *ngIf="referenceError()">{{ referenceError() }}</p>
+
+                <form [formGroup]="mapReferenceForm" (ngSubmit)="saveMapReference()" class="reference-form">
+                  <mat-form-field appearance="outline">
+                    <mat-label>Reference name</mat-label>
+                    <input matInput formControlName="name" />
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Category</mat-label>
+                    <mat-select formControlName="type">
+                      <mat-option *ngFor="let option of mapReferenceTypes" [value]="option.value">
+                        {{ option.label }}
+                      </mat-option>
+                    </mat-select>
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Description (optional)</mat-label>
+                    <input matInput formControlName="description" />
+                  </mat-form-field>
+
+                  <div class="coord-grid">
+                    <mat-form-field appearance="outline">
+                      <mat-label>Latitude</mat-label>
+                      <input matInput type="number" formControlName="lat" />
+                    </mat-form-field>
+                    <mat-form-field appearance="outline">
+                      <mat-label>Longitude</mat-label>
+                      <input matInput type="number" formControlName="lng" />
+                    </mat-form-field>
+                  </div>
+
+                  <div class="coord-grid">
+                    <mat-form-field appearance="outline">
+                      <mat-label>Color (#RRGGBB)</mat-label>
+                      <input matInput formControlName="color" placeholder="#2563eb" />
+                    </mat-form-field>
+                    <mat-form-field appearance="outline">
+                      <mat-label>Marker icon text</mat-label>
+                      <input matInput formControlName="icon" placeholder="e.g. H1" />
+                    </mat-form-field>
+                  </div>
+
+                  <mat-slide-toggle formControlName="visible">Visible on dashboard map</mat-slide-toggle>
+
+                  <div class="button-row left">
+                    <button mat-stroked-button type="button" (click)="pickMapReferencePoint()">
+                      {{ referencePickMode() ? 'Click on map...' : 'Pick point on map' }}
+                    </button>
+                    <button mat-raised-button color="primary" [disabled]="referenceSaving() || mapReferenceForm.invalid">
+                      {{ referenceSaving() ? 'Saving...' : (editingReferenceId() ? 'Update reference' : 'Create reference') }}
+                    </button>
+                    <button mat-button type="button" (click)="resetMapReferenceForm()">Reset</button>
+                  </div>
+                </form>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Filter references</mat-label>
+                  <mat-select [value]="referenceFilterType()" (selectionChange)="referenceFilterType.set($event.value)">
+                    <mat-option value="ALL">All categories</mat-option>
+                    <mat-option *ngFor="let option of mapReferenceTypes" [value]="option.value">
+                      {{ option.label }}
+                    </mat-option>
+                  </mat-select>
+                </mat-form-field>
+
+                <div class="reference-list">
+                  <div class="reference-item" *ngFor="let reference of filteredMapReferences()">
+                    <div class="reference-item-main">
+                      <strong>{{ reference.name }}</strong>
+                      <span>{{ mapReferenceTypeLabel(reference.type) }}</span>
+                      <span class="muted">{{ reference.lat | number:'1.5-5' }}, {{ reference.lng | number:'1.5-5' }}</span>
+                    </div>
+                    <div class="button-row left">
+                      <button mat-button type="button" (click)="editMapReference(reference)">Edit</button>
+                      <button mat-button type="button" color="warn" (click)="deleteMapReference(reference)">Delete</button>
+                    </div>
+                  </div>
+                  <p class="muted" *ngIf="!filteredMapReferences().length">No references in this filter.</p>
+                </div>
               </div>
             </mat-card>
           </div>
@@ -780,6 +964,42 @@ type ReportVm = {
         padding: 0.6rem;
       }
 
+      .reference-panel {
+        margin-top: 0.75rem;
+        display: grid;
+        gap: 0.6rem;
+      }
+
+      .reference-form {
+        display: grid;
+        gap: 0.6rem;
+        background: #f8fafc;
+        border: 1px solid #d6e0e7;
+        border-radius: 0.5rem;
+        padding: 0.75rem;
+      }
+
+      .reference-list {
+        display: grid;
+        gap: 0.45rem;
+      }
+
+      .reference-item {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.5rem;
+        align-items: center;
+        border: 1px solid #d6e0e7;
+        border-radius: 0.5rem;
+        padding: 0.55rem 0.65rem;
+        background: #fbfdff;
+      }
+
+      .reference-item-main {
+        display: grid;
+        gap: 0.12rem;
+      }
+
       .notif-line {
         width: 100%;
         display: flex;
@@ -957,6 +1177,39 @@ type ReportVm = {
         flex-wrap: wrap;
       }
 
+      .reference-search {
+        margin-top: 0.6rem;
+        display: grid;
+        gap: 0.45rem;
+        border: 1px solid #d6e0e7;
+        border-radius: 0.5rem;
+        background: #f8fafc;
+        padding: 0.6rem;
+      }
+
+      .reference-search-row {
+        display: flex;
+        gap: 0.5rem;
+        align-items: flex-start;
+      }
+
+      .reference-search-field {
+        flex: 1;
+      }
+
+      .reference-search-results {
+        display: grid;
+        gap: 0.2rem;
+        max-height: 170px;
+        overflow-y: auto;
+      }
+
+      .reference-hit {
+        justify-content: flex-start;
+        text-align: left;
+        white-space: normal;
+      }
+
       .picked {
         margin-top: 0.5rem;
         color: #1c7d4d;
@@ -1088,6 +1341,16 @@ type ReportVm = {
           gap: 0.35rem;
         }
 
+        .reference-search-row {
+          flex-direction: column;
+          align-items: stretch;
+        }
+
+        .reference-item {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+
         .chart-card {
           min-height: 300px;
         }
@@ -1118,6 +1381,8 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
   readonly saveSuccess = signal<string | null>(null);
   readonly hoveredMarker = signal<MapMarker | null>(null);
   readonly selectedMarker = signal<MapMarker | null>(null);
+  readonly hoveredMapReference = signal<MapReference | null>(null);
+  readonly selectedMapReference = signal<MapReference | null>(null);
   readonly hoveredPolicePoint = signal<HoveredPolicePoint | null>(null);
   readonly emergencyBuilderOpen = signal(false);
   readonly emergencyOverlayEnabled = signal(true);
@@ -1130,9 +1395,24 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
   readonly borderDrawing = signal(false);
   readonly borderPointsCount = signal(0);
   readonly borderMessage = signal<string | null>(null);
+  readonly householdPinsEnabled = signal(true);
+  readonly householdLabelsEnabled = signal(true);
+  readonly mapReferencesEnabled = signal(true);
+  readonly referenceLabelsEnabled = signal(true);
+  readonly zoneLabelsEnabled = signal(true);
   readonly heatmapEnabled = signal(true);
   readonly zoneGuidesEnabled = signal(true);
   readonly reportVm = signal<ReportVm | null>(null);
+  readonly mapReferenceTypes = referenceCategoryOptions;
+  readonly allMapReferences = signal<MapReference[]>([]);
+  readonly editingReferenceId = signal<string | null>(null);
+  readonly referencePickMode = signal(false);
+  readonly referenceSaving = signal(false);
+  readonly referenceError = signal<string | null>(null);
+  readonly referenceSuccess = signal<string | null>(null);
+  readonly referenceFilterType = signal<MapReferenceType | "ALL">("ALL");
+  readonly householdSearchQuery = signal("");
+  readonly referenceSearchQuery = signal("");
 
   householdsByZoneChart: ChartData<"bar"> = { labels: [], datasets: [{ data: [], label: "Households" }] };
   individualsByZoneChart: ChartData<"bar"> = { labels: [], datasets: [{ data: [], label: "Individuals" }] };
@@ -1156,7 +1436,6 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
     emergencyPhone: [""],
     emergencyRelation: [""],
     housingType: ["HOST", Validators.required],
-    safetyCheckStatus: ["PENDING", Validators.required],
     arrivalDate: [new Date().toISOString().slice(0, 10), Validators.required],
     members: this.fb.array([this.createMemberGroup()], Validators.minLength(1))
   });
@@ -1168,13 +1447,30 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
     policePosts: this.fb.array([this.createPolicePostGroup()])
   });
 
+  readonly mapReferenceForm = this.fb.group({
+    name: ["", [Validators.required, Validators.maxLength(160)]],
+    type: ["LANDMARK" as MapReferenceType, Validators.required],
+    description: [""],
+    lat: [null as number | null, [Validators.required, Validators.min(-90), Validators.max(90)]],
+    lng: [null as number | null, [Validators.required, Validators.min(-180), Validators.max(180)]],
+    color: [""],
+    icon: [""],
+    visible: [true]
+  });
+
   private map?: L.Map;
   private markerLayer = L.layerGroup();
+  private householdLabelLayer = L.layerGroup();
+  private referenceLayer = L.layerGroup();
+  private referenceLabelLayer = L.layerGroup();
+  private zoneLabelLayer = L.layerGroup();
   private heatLayer = L.layerGroup();
   private tempLayer = L.layerGroup();
   private emergencyLayer = L.layerGroup();
   private villageBorderLayer = L.layerGroup();
   private zoneGuidesLayer = L.layerGroup();
+  private readonly householdMarkersById = new Map<string, L.Marker>();
+  private readonly referenceMarkersById = new Map<string, L.Marker>();
   private emergencyPickMode: { index: number } | null = null;
   private villageBorderPoints: L.LatLngTuple[] = [];
   private readonly mapCenter: L.LatLngTuple = [33.93444, 35.69972];
@@ -1186,6 +1482,9 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
     this.loadZones();
     this.loadDashboard();
     this.loadNotifications();
+    if (this.isAdminUser()) {
+      this.loadMapReferencesForAdmin();
+    }
     this.initMap();
     window.addEventListener("resize", this.resizeHandler);
   }
@@ -1288,6 +1587,10 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
         const idDocLast4 = String(control.get("idDocLast4")?.value ?? "").trim();
         const schoolEnrollment = String(control.get("schoolEnrollment")?.value ?? "NA");
         const employmentStatus = String(control.get("employmentStatus")?.value ?? "NA");
+        const safetyCheckStatus =
+          String(control.get("safetyCheckStatus")?.value ?? "PENDING") === "CHECKED_SAFE"
+            ? "CHECKED_SAFE"
+            : "PENDING";
         const hasDisability = !!control.get("hasDisability")?.value;
         const hasChronicCondition = !!control.get("hasChronicCondition")?.value;
         const pregnantOrLactating = !!control.get("pregnantOrLactating")?.value;
@@ -1314,6 +1617,7 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
           idDocLast4: idDocLast4 || null,
           schoolEnrollment,
           employmentStatus,
+          safetyCheckStatus,
           hasDisability,
           hasChronicCondition,
           pregnantOrLactating,
@@ -1371,7 +1675,6 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
         familySize: members.length,
         arrivalDate: form.arrivalDate,
         housingType: form.housingType,
-        safetyCheckStatus: form.safetyCheckStatus,
         hasCar: !!firstCarMember,
         carModel: firstCarMember?.carModel ?? null,
         carColor: firstCarMember?.carColor ?? null,
@@ -1493,6 +1796,47 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
     const summary = this.summary();
     if (summary) {
       this.refreshEmergencyOverlay(summary);
+    }
+  }
+
+  setHouseholdPinsEnabled(enabled: boolean) {
+    this.householdPinsEnabled.set(enabled);
+    const summary = this.summary();
+    if (summary) {
+      this.refreshMapMarkers(summary);
+      this.refreshZoneLabels(summary);
+    }
+  }
+
+  setHouseholdLabelsEnabled(enabled: boolean) {
+    this.householdLabelsEnabled.set(enabled);
+    const summary = this.summary();
+    if (summary) {
+      this.refreshMapMarkers(summary);
+    }
+  }
+
+  setMapReferencesEnabled(enabled: boolean) {
+    this.mapReferencesEnabled.set(enabled);
+    const summary = this.summary();
+    if (summary) {
+      this.refreshMapReferences(summary);
+    }
+  }
+
+  setReferenceLabelsEnabled(enabled: boolean) {
+    this.referenceLabelsEnabled.set(enabled);
+    const summary = this.summary();
+    if (summary) {
+      this.refreshMapReferences(summary);
+    }
+  }
+
+  setZoneLabelsEnabled(enabled: boolean) {
+    this.zoneLabelsEnabled.set(enabled);
+    const summary = this.summary();
+    if (summary) {
+      this.refreshZoneLabels(summary);
     }
   }
 
@@ -1619,7 +1963,6 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
       !!this.arrivalForm.get("headName")?.valid &&
       !!this.arrivalForm.get("phoneNumber")?.valid &&
       !!this.arrivalForm.get("housingType")?.valid &&
-      !!this.arrivalForm.get("safetyCheckStatus")?.valid &&
       !!this.arrivalForm.get("arrivalDate")?.valid
     );
   }
@@ -1630,6 +1973,262 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
 
   isPoliceUser() {
     return this.auth.currentUser()?.role === "POLICE";
+  }
+
+  isAdminUser() {
+    return this.auth.currentUser()?.role === "ADMIN";
+  }
+
+  mapReferenceTypeLabel(type: MapReferenceType) {
+    return this.mapReferenceTypes.find((option) => option.value === type)?.label ?? type;
+  }
+
+  setHouseholdSearchQuery(query: string) {
+    this.householdSearchQuery.set(query);
+  }
+
+  clearHouseholdSearch() {
+    this.householdSearchQuery.set("");
+  }
+
+  searchedHouseholdMarkers() {
+    const query = this.householdSearchQuery().trim().toLowerCase();
+    const markers = this.summary()?.mapMarkers ?? [];
+    if (!query) {
+      return markers
+        .slice()
+        .sort((a, b) => String(a.householdCode ?? "").localeCompare(String(b.householdCode ?? ""), undefined, { numeric: true }));
+    }
+
+    return markers
+      .filter((marker) => this.markerSearchText(marker).includes(query))
+      .sort((a, b) => String(a.householdCode ?? "").localeCompare(String(b.householdCode ?? ""), undefined, { numeric: true }));
+  }
+
+  focusHouseholdOnMap(marker: MapMarker) {
+    if (!this.householdPinsEnabled()) {
+      this.householdPinsEnabled.set(true);
+      const summary = this.summary();
+      if (summary) {
+        this.refreshMapMarkers(summary);
+      }
+    }
+
+    this.selectedMapReference.set(null);
+    this.hoveredMapReference.set(null);
+    this.hoveredPolicePoint.set(null);
+    this.selectedMarker.set(marker);
+    this.hoveredMarker.set(marker);
+
+    if (this.map) {
+      const targetZoom = Math.max(this.map.getZoom(), 17);
+      this.map.flyTo([marker.approxLat, marker.approxLng], targetZoom, { duration: 0.45 });
+    }
+
+    setTimeout(() => {
+      this.householdMarkersById.get(marker.id)?.openPopup();
+    }, 220);
+  }
+
+  setReferenceSearchQuery(query: string) {
+    this.referenceSearchQuery.set(query);
+  }
+
+  clearReferenceSearch() {
+    this.referenceSearchQuery.set("");
+  }
+
+  searchedMapReferences() {
+    const query = this.referenceSearchQuery().trim().toLowerCase();
+    const references = this.summary()?.mapReferences ?? [];
+    if (!query) {
+      return references
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+    }
+
+    return references
+      .filter((reference) => {
+        const typeLabel = this.mapReferenceTypeLabel(reference.type).toLowerCase();
+        return (
+          reference.name.toLowerCase().includes(query) ||
+          typeLabel.includes(query) ||
+          (reference.description ?? "").toLowerCase().includes(query)
+        );
+      })
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+  }
+
+  focusReferenceOnMap(reference: MapReference) {
+    if (!this.mapReferencesEnabled()) {
+      this.mapReferencesEnabled.set(true);
+      const summary = this.summary();
+      if (summary) {
+        this.refreshMapReferences(summary);
+      }
+    }
+
+    this.selectedMarker.set(null);
+    this.hoveredMarker.set(null);
+    this.hoveredPolicePoint.set(null);
+    this.selectedMapReference.set(reference);
+    this.hoveredMapReference.set(reference);
+
+    if (this.map) {
+      const targetZoom = Math.max(this.map.getZoom(), 17);
+      this.map.flyTo([reference.lat, reference.lng], targetZoom, { duration: 0.45 });
+    }
+
+    setTimeout(() => {
+      this.referenceMarkersById.get(reference.id)?.openPopup();
+    }, 220);
+  }
+
+  filteredMapReferences() {
+    const filter = this.referenceFilterType();
+    const references = this.allMapReferences();
+    const filtered = filter === "ALL" ? references : references.filter((reference) => reference.type === filter);
+    return filtered
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+  }
+
+  activeMapReference() {
+    return this.selectedMapReference() ?? this.hoveredMapReference();
+  }
+
+  clearSelectedMapReference() {
+    this.selectedMapReference.set(null);
+  }
+
+  editMapReference(reference: MapReference) {
+    this.editingReferenceId.set(reference.id);
+    this.mapReferenceForm.patchValue({
+      name: reference.name,
+      type: reference.type,
+      description: reference.description ?? "",
+      lat: reference.lat,
+      lng: reference.lng,
+      color: reference.color ?? "",
+      icon: reference.icon ?? "",
+      visible: reference.visible
+    });
+    this.referencePickMode.set(false);
+    this.referenceError.set(null);
+    this.referenceSuccess.set(`Editing reference: ${reference.name}`);
+    this.selectedMapReference.set(reference);
+    if (this.map) {
+      this.map.panTo([reference.lat, reference.lng]);
+    }
+  }
+
+  resetMapReferenceForm() {
+    this.editingReferenceId.set(null);
+    this.referencePickMode.set(false);
+    this.referenceError.set(null);
+    this.referenceSuccess.set(null);
+    this.mapReferenceForm.reset({
+      name: "",
+      type: "LANDMARK" as MapReferenceType,
+      description: "",
+      lat: null,
+      lng: null,
+      color: "",
+      icon: "",
+      visible: true
+    });
+  }
+
+  pickMapReferencePoint() {
+    this.borderDrawing.set(false);
+    this.borderMessage.set(null);
+    this.pickingLocation.set(false);
+    this.emergencyPickMode = null;
+    this.referencePickMode.set(true);
+    this.referenceError.set(null);
+    this.referenceSuccess.set("Click on the map to set reference coordinates.");
+  }
+
+  saveMapReference() {
+    this.referenceError.set(null);
+    this.referenceSuccess.set(null);
+
+    if (this.mapReferenceForm.invalid) {
+      this.mapReferenceForm.markAllAsTouched();
+      this.referenceError.set("Please complete the required reference fields.");
+      return;
+    }
+
+    const raw = this.mapReferenceForm.getRawValue();
+    const color = String(raw.color ?? "").trim();
+    if (color && !/^#[0-9A-Fa-f]{6}$/.test(color)) {
+      this.referenceError.set("Color must use #RRGGBB format.");
+      return;
+    }
+
+    const payload = {
+      name: String(raw.name ?? "").trim(),
+      type: raw.type as MapReferenceType,
+      description: String(raw.description ?? "").trim() || null,
+      lat: Number(raw.lat),
+      lng: Number(raw.lng),
+      color: color || null,
+      icon: String(raw.icon ?? "").trim() || null,
+      visible: !!raw.visible
+    };
+
+    const id = this.editingReferenceId();
+    this.referenceSaving.set(true);
+    const request = id
+      ? this.api.patch<MapReference>(`/map-references/${id}`, payload)
+      : this.api.post<MapReference>("/map-references", payload);
+
+    request.subscribe({
+      next: (saved) => {
+        this.referenceSaving.set(false);
+        this.referencePickMode.set(false);
+        this.referenceSuccess.set(id ? "Map reference updated." : "Map reference created.");
+        this.editingReferenceId.set(saved.id);
+        this.selectedMapReference.set(saved);
+        this.loadDashboard();
+        this.loadMapReferencesForAdmin();
+      },
+      error: (err: HttpErrorResponse) => {
+        this.referenceSaving.set(false);
+        const formError =
+          Array.isArray(err?.error?.issues?.formErrors) && err.error.issues.formErrors.length
+            ? String(err.error.issues.formErrors[0])
+            : null;
+        const message = String(err?.error?.message ?? "").trim();
+        this.referenceError.set(formError || message || "Could not save map reference.");
+      }
+    });
+  }
+
+  deleteMapReference(reference: MapReference) {
+    if (!window.confirm(`Delete reference "${reference.name}"?`)) {
+      return;
+    }
+
+    this.referenceError.set(null);
+    this.referenceSuccess.set(null);
+    this.api.delete(`/map-references/${reference.id}`).subscribe({
+      next: () => {
+        if (this.editingReferenceId() === reference.id) {
+          this.resetMapReferenceForm();
+        }
+        if (this.selectedMapReference()?.id === reference.id) {
+          this.selectedMapReference.set(null);
+        }
+        this.referenceSuccess.set("Map reference deleted.");
+        this.loadDashboard();
+        this.loadMapReferencesForAdmin();
+      },
+      error: (err: HttpErrorResponse) => {
+        const message = String(err?.error?.message ?? "").trim();
+        this.referenceError.set(message || "Could not delete map reference.");
+      }
+    });
   }
 
   markNotificationRead(notificationId: string) {
@@ -1786,10 +2385,28 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
       this.reportVm.set(this.buildExecutiveReport(summary));
       this.activeEmergencyPlan.set(summary.emergencyPlan ?? null);
       this.refreshMapMarkers(summary);
+      this.refreshMapReferences(summary);
+      this.refreshZoneLabels(summary);
       this.refreshHeatMap(summary);
       this.refreshEmergencyOverlay(summary);
       this.updateCharts(summary);
       this.deferMapResize();
+    });
+  }
+
+  private loadMapReferencesForAdmin() {
+    if (!this.isAdminUser()) {
+      this.allMapReferences.set([]);
+      return;
+    }
+
+    this.api.get<MapReference[]>("/map-references").subscribe({
+      next: (references) => {
+        this.allMapReferences.set(references);
+      },
+      error: () => {
+        this.referenceError.set("Could not load map references.");
+      }
     });
   }
 
@@ -1818,14 +2435,16 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
 
     this.map = L.map("dashboard-map", {
       center: this.mapCenter,
-      zoom: 15
+      zoom: 15,
+      maxZoom: 22
     });
 
     L.tileLayer(
       "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
       {
         attribution: "Tiles &copy; Esri - Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
-        maxZoom: 20
+        maxNativeZoom: 19,
+        maxZoom: 22
       }
     ).addTo(this.map);
 
@@ -1833,12 +2452,17 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
       "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
       {
         attribution: "Labels &copy; Esri",
-        maxZoom: 20
+        maxNativeZoom: 19,
+        maxZoom: 22
       }
     ).addTo(this.map);
 
-    this.markerLayer.addTo(this.map);
     this.heatLayer.addTo(this.map);
+    this.markerLayer.addTo(this.map);
+    this.householdLabelLayer.addTo(this.map);
+    this.referenceLayer.addTo(this.map);
+    this.referenceLabelLayer.addTo(this.map);
+    this.zoneLabelLayer.addTo(this.map);
     this.tempLayer.addTo(this.map);
     this.emergencyLayer.addTo(this.map);
     this.villageBorderLayer.addTo(this.map);
@@ -1846,6 +2470,14 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
     this.loadBorderFromStorage();
     this.renderVillageBorder();
     this.renderZoneGuides();
+    const summary = this.summary();
+    if (summary) {
+      this.refreshMapMarkers(summary);
+      this.refreshMapReferences(summary);
+      this.refreshZoneLabels(summary);
+      this.refreshHeatMap(summary);
+      this.refreshEmergencyOverlay(summary);
+    }
 
     this.map.on("click", (event: L.LeafletMouseEvent) => {
       if (this.borderDrawing()) {
@@ -1871,6 +2503,17 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
         return;
       }
 
+      if (this.referencePickMode()) {
+        this.mapReferenceForm.patchValue({
+          lat: Number(event.latlng.lat.toFixed(6)),
+          lng: Number(event.latlng.lng.toFixed(6))
+        });
+        this.referencePickMode.set(false);
+        this.referenceSuccess.set("Reference coordinates captured from map.");
+        this.referenceError.set(null);
+        return;
+      }
+
       if (!this.pickingLocation()) {
         return;
       }
@@ -1880,7 +2523,16 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
       this.pickingLocation.set(false);
     });
 
-    this.map.on("zoomend moveend", () => this.renderZoneGuides());
+    this.map.on("zoomend moveend", () => {
+      this.renderZoneGuides();
+      const summary = this.summary();
+      if (!summary) {
+        return;
+      }
+      this.refreshMapMarkers(summary);
+      this.refreshMapReferences(summary);
+      this.refreshZoneLabels(summary);
+    });
   }
 
   private renderVillageBorder() {
@@ -1972,10 +2624,18 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
 
   private refreshMapMarkers(summary: DashboardSummary) {
     this.markerLayer.clearLayers();
+    this.householdLabelLayer.clearLayers();
+    this.householdMarkersById.clear();
     this.hoveredMarker.set(null);
     this.hoveredPolicePoint.set(null);
+    if (!this.householdPinsEnabled()) {
+      this.selectedMarker.set(null);
+      return;
+    }
+
     const selectedId = this.selectedMarker()?.id ?? null;
     let selectedFound = false;
+    const showLabels = this.householdLabelsEnabled() && (this.map?.getZoom() ?? 0) >= 16;
 
     const sortedMarkers = summary.mapMarkers
       .slice()
@@ -1987,7 +2647,7 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
       }
 
       const isSafe = marker.safetyCheckStatus === "CHECKED_SAFE";
-      const pinNumber = index + 1;
+      const pinNumber = this.householdCodeToPinNumber(marker.householdCode, index + 1);
       const icon = this.createFamilyPinIcon(pinNumber, isSafe);
       const pin = L.marker([marker.approxLat, marker.approxLng], {
         icon,
@@ -2003,6 +2663,7 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
       );
 
       pin.on("mouseover", () => {
+        this.hoveredMapReference.set(null);
         this.hoveredPolicePoint.set(null);
         if (this.selectedMarker()?.id !== marker.id) {
           this.hoveredMarker.set(marker);
@@ -2020,6 +2681,7 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
       });
 
       pin.on("click", () => {
+        this.selectedMapReference.set(null);
         this.selectedMarker.set(marker);
         this.hoveredMarker.set(marker);
         pin.openPopup();
@@ -2031,10 +2693,114 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
       }
 
       pin.addTo(this.markerLayer);
+      this.householdMarkersById.set(marker.id, pin);
+
+      if (showLabels) {
+        const labelText = this.householdLabelText(marker, pinNumber);
+        if (labelText) {
+          this.createInlineLabelMarker([marker.approxLat, marker.approxLng], labelText, "household").addTo(this.householdLabelLayer);
+        }
+      }
     }
 
     if (selectedId && !selectedFound) {
       this.selectedMarker.set(null);
+    }
+  }
+
+  private householdCodeToPinNumber(householdCode: string | null | undefined, fallbackNumber: number) {
+    const code = String(householdCode ?? "").trim();
+    const match = code.match(/^HH-(\d+)$/i);
+    if (!match) {
+      return fallbackNumber;
+    }
+
+    const numeric = Number.parseInt(match[1], 10);
+    return Number.isFinite(numeric) && numeric > 0 ? numeric : fallbackNumber;
+  }
+
+  private refreshMapReferences(summary: DashboardSummary) {
+    this.referenceLayer.clearLayers();
+    this.referenceLabelLayer.clearLayers();
+    this.referenceMarkersById.clear();
+    this.hoveredMapReference.set(null);
+    if (!this.mapReferencesEnabled()) {
+      this.selectedMapReference.set(null);
+      return;
+    }
+
+    const selectedId = this.selectedMapReference()?.id ?? null;
+    let selectedFound = false;
+    const showLabels = this.referenceLabelsEnabled() && (this.map?.getZoom() ?? 0) >= 15;
+
+    for (const reference of summary.mapReferences) {
+      const marker = L.marker([reference.lat, reference.lng], {
+        icon: this.createReferenceIcon(reference),
+        keyboard: true
+      });
+
+      marker.bindPopup(
+        `${this.escapeHtml(reference.name)} | ${this.escapeHtml(this.mapReferenceTypeLabel(reference.type))} | ${
+          reference.description ? this.escapeHtml(reference.description) : "No description"
+        }`
+      );
+
+      marker.on("mouseover", () => {
+        this.hoveredMarker.set(null);
+        this.hoveredPolicePoint.set(null);
+        if (this.selectedMapReference()?.id !== reference.id) {
+          this.hoveredMapReference.set(reference);
+        }
+        marker.openPopup();
+      });
+
+      marker.on("mouseout", () => {
+        if (this.selectedMapReference()?.id !== reference.id && this.hoveredMapReference()?.id === reference.id) {
+          this.hoveredMapReference.set(null);
+        }
+        if (this.selectedMapReference()?.id !== reference.id) {
+          marker.closePopup();
+        }
+      });
+
+      marker.on("click", () => {
+        this.selectedMarker.set(null);
+        this.selectedMapReference.set(reference);
+        this.hoveredMapReference.set(reference);
+        marker.openPopup();
+      });
+
+      if (selectedId && selectedId === reference.id) {
+        this.selectedMapReference.set(reference);
+        selectedFound = true;
+      }
+
+      marker.addTo(this.referenceLayer);
+      this.referenceMarkersById.set(reference.id, marker);
+
+      if (showLabels) {
+        this.createInlineLabelMarker([reference.lat, reference.lng], reference.name, "reference").addTo(this.referenceLabelLayer);
+      }
+    }
+
+    if (selectedId && !selectedFound) {
+      this.selectedMapReference.set(null);
+    }
+  }
+
+  private refreshZoneLabels(summary: DashboardSummary) {
+    this.zoneLabelLayer.clearLayers();
+    if (!this.zoneLabelsEnabled()) {
+      return;
+    }
+
+    const zoom = this.map?.getZoom() ?? 0;
+    if (zoom < 14) {
+      return;
+    }
+
+    for (const zone of summary.zoneLabels) {
+      this.createInlineLabelMarker([zone.lat, zone.lng], zone.zone, "zone").addTo(this.zoneLabelLayer);
     }
   }
 
@@ -2292,6 +3058,92 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
     });
   }
 
+  private markerSearchText(marker: MapMarker) {
+    const memberText = Array.isArray(marker.members)
+      ? marker.members
+          .map((member) =>
+            [
+              member.name,
+              member.firstName,
+              member.lastName,
+              member.fatherName,
+              member.motherName,
+              member.civilIdentityNumber,
+              member.phoneNumber
+            ]
+              .filter((value) => typeof value === "string" && value.trim().length > 0)
+              .join(" ")
+          )
+          .join(" ")
+      : "";
+
+    return [
+      marker.householdCode,
+      marker.pinLabel,
+      marker.headName,
+      marker.firstName,
+      marker.lastName,
+      marker.fatherName,
+      marker.motherName,
+      marker.civilIdentityNumber,
+      marker.phoneNumber,
+      marker.originArea,
+      memberText
+    ]
+      .filter((value) => typeof value === "string" && value.trim().length > 0)
+      .join(" ")
+      .toLowerCase();
+  }
+
+  private householdLabelText(marker: MapMarker, pinNumber: number) {
+    const primary = marker.pinLabel || marker.headName || `${marker.firstName || ""} ${marker.lastName || ""}`.trim() || marker.householdCode;
+    return `#${pinNumber} ${primary}`.trim();
+  }
+
+  private createInlineLabelMarker(position: L.LatLngTuple, text: string, kind: "household" | "reference" | "zone") {
+    const escaped = this.escapeHtml(text);
+    const styles =
+      kind === "household"
+        ? "background:rgba(15,23,42,.85);border:1px solid rgba(148,163,184,.7);color:#f8fafc;"
+        : kind === "reference"
+          ? "background:rgba(2,44,34,.9);border:1px solid rgba(45,212,191,.65);color:#dcfce7;"
+          : "background:rgba(30,41,59,.85);border:1px solid rgba(147,197,253,.7);color:#dbeafe;";
+
+    return L.marker(position, {
+      interactive: false,
+      keyboard: false,
+      icon: L.divIcon({
+        className: "",
+        iconSize: [10, 10],
+        iconAnchor: [5, 18],
+        html: `<span style="display:inline-block;max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;${styles}">${escaped}</span>`
+      })
+    });
+  }
+
+  private createReferenceIcon(reference: MapReference) {
+    const category = this.mapReferenceTypes.find((option) => option.value === reference.type);
+    const color = reference.color || category?.defaultColor || "#475569";
+    const iconText = this.escapeHtml((reference.icon || category?.shortIcon || "R").slice(0, 4).toUpperCase());
+
+    return L.divIcon({
+      className: "",
+      iconSize: [30, 30],
+      iconAnchor: [15, 15],
+      popupAnchor: [0, -12],
+      html: `<div style="width:30px;height:30px;border-radius:8px;background:${color};border:2px solid rgba(255,255,255,.95);color:#fff;font-weight:700;font-size:11px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.35);">${iconText}</div>`
+    });
+  }
+
+  private escapeHtml(value: string) {
+    return value
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+  }
+
   private createMemberGroup() {
     return this.fb.group({
       firstName: ["", [Validators.required, Validators.maxLength(80)]],
@@ -2311,6 +3163,7 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
       idDocLast4: [""],
       schoolEnrollment: ["NA", Validators.required],
       employmentStatus: ["NA", Validators.required],
+      safetyCheckStatus: ["PENDING", Validators.required],
       hasDisability: [false],
       hasChronicCondition: [false],
       pregnantOrLactating: [false],
@@ -2363,7 +3216,6 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
       emergencyPhone: "",
       emergencyRelation: "",
       housingType: "HOST",
-      safetyCheckStatus: "PENDING",
       arrivalDate: new Date().toISOString().slice(0, 10)
     });
     this.membersArray.clear();
