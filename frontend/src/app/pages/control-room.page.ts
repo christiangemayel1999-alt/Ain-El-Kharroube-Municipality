@@ -75,6 +75,7 @@ type SelectCause = "MAP" | "SWITCH" | "SELECT";
         </div>
 
         <p class="err" *ngIf="error()">{{ error() }}</p>
+        <p class="err" *ngIf="camera.viewerErrors()['_global']">{{ camera.viewerErrors()['_global'] }}</p>
       </mat-card>
 
       <section class="summary-grid" *ngIf="overview() as o">
@@ -130,6 +131,7 @@ type SelectCause = "MAP" | "SWITCH" | "SELECT";
               <p class="meta">{{ session.user.role }} | Started {{ session.startedAt | date:'HH:mm:ss' }}</p>
               <p class="meta">Mic: {{ session.microphoneEnabled === null ? 'Unknown' : session.microphoneEnabled ? 'On' : 'Muted' }}</p>
               <p class="meta">GPS freshness: {{ formatFreshness(session.location?.freshnessSeconds ?? null) }}</p>
+              <p class="err small" *ngIf="streamErrorFor(session.id)">{{ streamErrorFor(session.id) }}</p>
 
               <div class="tile-actions">
                 <button mat-button type="button" (click)="focusUserOnMap(session.userId)">Focus map</button>
@@ -278,6 +280,8 @@ type SelectCause = "MAP" | "SWITCH" | "SELECT";
             <button mat-button type="button" (click)="selectSession(session.id, 'SELECT')">Open large</button>
             <button mat-button type="button" (click)="requestFullscreen(tileRightVideo)">Fullscreen</button>
           </div>
+
+          <p class="err small" *ngIf="streamErrorFor(session.id)">{{ streamErrorFor(session.id) }}</p>
         </article>
       </section>
 
@@ -724,6 +728,11 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
 
   streamFor(sessionId: string) {
     return this.camera.viewerStreams()[sessionId] ?? null;
+  }
+
+  streamErrorFor(sessionId: string) {
+    const value = this.camera.viewerErrors()[sessionId] ?? "";
+    return value.trim() || null;
   }
 
   tileState(session: LiveCameraSessionRecord) {

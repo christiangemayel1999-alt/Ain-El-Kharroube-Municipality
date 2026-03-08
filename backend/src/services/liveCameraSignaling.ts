@@ -541,7 +541,7 @@ async function handleIncomingMessage(client: SignalClient, raw: RawData) {
 
 async function resolveClientFromRequest(req: IncomingMessage) {
   const url = buildUpgradeUrl(req);
-  if (url.pathname !== "/live-camera/ws") {
+  if (!url.pathname.endsWith("/live-camera/ws")) {
     return { ok: false as const, status: 404, reason: "Not found" };
   }
 

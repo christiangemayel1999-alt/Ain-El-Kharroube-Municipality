@@ -638,6 +638,18 @@ export interface LiveCameraSessionRecord {
   updatedAt: string;
 }
 
+export interface LiveCameraIceServerConfig {
+  urls: string | string[];
+  username?: string;
+  credential?: string;
+  credentialType?: "password" | "oauth";
+}
+
+export interface LiveCameraIceConfig {
+  iceServers: LiveCameraIceServerConfig[];
+  iceTransportPolicy?: "all" | "relay";
+}
+
 export interface LiveCameraLogRow {
   id: string;
   userId: string;

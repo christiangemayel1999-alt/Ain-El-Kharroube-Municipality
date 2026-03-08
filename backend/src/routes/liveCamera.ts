@@ -12,6 +12,7 @@ import { requireRoles } from "../middleware/rbac";
 import { validateBody, validateQuery } from "../middleware/validate";
 import { computeTrackingHealthState } from "../services/trackingPing";
 import { writeLiveCameraEvent } from "../services/liveCameraAudit";
+import { getLiveCameraIceConfig } from "../services/liveCameraIce";
 import { asyncHandler } from "../utils/asyncHandler";
 
 const CONTROL_ROOM_VIEW_ROLES = [Role.ADMIN, Role.CASE_WORKER, Role.POLICE] as const;
@@ -145,6 +146,31 @@ function cameraStateBadge(sessionStatus: LiveCameraSessionStatus, isActive: bool
 
 export const liveCameraRouter = Router();
 export const controlRoomRouter = Router();
+
+liveCameraRouter.get(
+  "/ice-config",
+  asyncHandler(async (req, res) => {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user!.id },
+      select: {
+        id: true,
+        role: true,
+        isActive: true,
+        canSendLiveCamera: true
+      }
+    });
+
+    if (!user || !user.isActive) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    if (!user.canSendLiveCamera && !userCanViewControlRoom(user.role)) {
+      return res.status(403).json({ message: "You are not allowed to access live camera streaming configuration." });
+    }
+
+    return res.json(getLiveCameraIceConfig());
+  })
+);
 
 liveCameraRouter.post(
   "/sessions/start",

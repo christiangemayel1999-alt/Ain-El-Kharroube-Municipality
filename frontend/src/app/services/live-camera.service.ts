@@ -1,7 +1,7 @@
 ﻿import { Injectable, signal } from "@angular/core";
 import { firstValueFrom } from "rxjs";
 import { environment } from "../../environments/environment";
-import { LiveCameraSessionRecord, LiveCameraSessionStatus } from "../models";
+import { LiveCameraIceConfig, LiveCameraSessionRecord, LiveCameraSessionStatus } from "../models";
 import { ApiService } from "./api.service";
 import { AuthService } from "./auth.service";
 
@@ -17,6 +17,8 @@ type SignalMessage = {
 export class LiveCameraService {
   private readonly senderPeerConnections = new Map<SenderPeerKey, RTCPeerConnection>();
   private readonly viewerPeerConnections = new Map<string, RTCPeerConnection>();
+  private readonly viewerTrackWaitTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private rtcConfigurationPromise: Promise<RTCConfiguration> | null = null;
 
   private senderSocket: WebSocket | null = null;
   private viewerSocket: WebSocket | null = null;
@@ -317,13 +319,27 @@ export class LiveCameraService {
   }
 
   private async openViewerPeer(session: LiveCameraSessionRecord) {
-    const config: RTCConfiguration = {
-      iceServers: [{ urls: ["stun:stun.l.google.com:19302"] }]
-    };
-
+    const config = await this.getRtcConfiguration();
     const viewerPeerId = session.id;
     const peer = new RTCPeerConnection(config);
     this.viewerPeerConnections.set(session.id, peer);
+    this.clearViewerTrackWaitTimer(session.id);
+
+    let receivedMedia = false;
+    this.viewerTrackWaitTimers.set(
+      session.id,
+      setTimeout(() => {
+        if (receivedMedia || !this.viewerPeerConnections.has(session.id)) {
+          return;
+        }
+
+        this.viewerErrors.update((rows) => ({
+          ...rows,
+          [session.id]:
+            "No media received yet. If you are on hosted Wi-Fi/NAT, configure TURN relay in backend ICE settings."
+        }));
+      }, 15_000)
+    );
 
     peer.addTransceiver("video", { direction: "recvonly" });
     peer.addTransceiver("audio", { direction: "recvonly" });
@@ -333,6 +349,8 @@ export class LiveCameraService {
       if (!stream) {
         return;
       }
+      receivedMedia = true;
+      this.clearViewerTrackWaitTimer(session.id);
 
       this.viewerStreams.update((rows) => ({
         ...rows,
@@ -358,6 +376,23 @@ export class LiveCameraService {
         viewerPeerId,
         candidate: event.candidate.toJSON()
       });
+    };
+
+    peer.oniceconnectionstatechange = () => {
+      if (peer.iceConnectionState === "failed" || peer.iceConnectionState === "disconnected") {
+        this.viewerErrors.update((rows) => ({
+          ...rows,
+          [session.id]: "ICE connection failed. TURN relay is likely required for this network."
+        }));
+        return;
+      }
+
+      if (peer.iceConnectionState === "connected" || peer.iceConnectionState === "completed") {
+        this.viewerErrors.update((rows) => ({
+          ...rows,
+          [session.id]: ""
+        }));
+      }
     };
 
     peer.onconnectionstatechange = () => {
@@ -399,10 +434,12 @@ export class LiveCameraService {
     if (peer) {
       peer.ontrack = null;
       peer.onicecandidate = null;
+      peer.oniceconnectionstatechange = null;
       peer.onconnectionstatechange = null;
       peer.close();
       this.viewerPeerConnections.delete(sessionId);
     }
+    this.clearViewerTrackWaitTimer(sessionId);
 
     this.viewerStreams.update((rows) => {
       const next = { ...rows };
@@ -610,9 +647,7 @@ export class LiveCameraService {
     const key = `${viewerUserId}:${viewerPeerId}` as SenderPeerKey;
     this.closeSenderPeer(key);
 
-    const peer = new RTCPeerConnection({
-      iceServers: [{ urls: ["stun:stun.l.google.com:19302"] }]
-    });
+    const peer = new RTCPeerConnection(await this.getRtcConfiguration());
     this.senderPeerConnections.set(key, peer);
 
     const stream = this.senderLocalStream();
@@ -766,6 +801,62 @@ export class LiveCameraService {
     }
   }
 
+  private async getRtcConfiguration() {
+    if (this.rtcConfigurationPromise) {
+      return this.rtcConfigurationPromise;
+    }
+
+    this.rtcConfigurationPromise = firstValueFrom(this.api.getLiveCameraIceConfig())
+      .then((config) => this.normalizeRtcConfiguration(config))
+      .catch(() => this.defaultRtcConfiguration());
+
+    return this.rtcConfigurationPromise;
+  }
+
+  private normalizeRtcConfiguration(config: LiveCameraIceConfig | null | undefined): RTCConfiguration {
+    const servers = (config?.iceServers ?? [])
+      .map((server): RTCIceServer | null => {
+        const urlsList = Array.isArray(server.urls)
+          ? server.urls.map((url) => String(url).trim()).filter((url) => url.length > 0)
+          : [String(server.urls ?? "").trim()].filter((url) => url.length > 0);
+
+        if (!urlsList.length) {
+          return null;
+        }
+
+        return {
+          urls: urlsList.length === 1 ? urlsList[0] : urlsList,
+          username: server.username || undefined,
+          credential: server.credential || undefined
+        };
+      })
+      .filter((server): server is RTCIceServer => Boolean(server));
+
+    if (!servers.length) {
+      return this.defaultRtcConfiguration();
+    }
+
+    return {
+      iceServers: servers,
+      iceTransportPolicy: config?.iceTransportPolicy === "relay" ? "relay" : "all"
+    };
+  }
+
+  private defaultRtcConfiguration(): RTCConfiguration {
+    return {
+      iceServers: [{ urls: ["stun:stun.l.google.com:19302"] }],
+      iceTransportPolicy: "all"
+    };
+  }
+
+  private clearViewerTrackWaitTimer(sessionId: string) {
+    const timer = this.viewerTrackWaitTimers.get(sessionId);
+    if (timer) {
+      clearTimeout(timer);
+      this.viewerTrackWaitTimers.delete(sessionId);
+    }
+  }
+
   private buildWsUrl(mode: WsMode) {
     const token = this.auth.getToken();
     if (!token) {
@@ -773,8 +864,9 @@ export class LiveCameraService {
     }
 
     const parsed = new URL(environment.apiBaseUrl);
+    const basePath = parsed.pathname.replace(/\/+$/, "");
     parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
-    parsed.pathname = "/live-camera/ws";
+    parsed.pathname = `${basePath}/live-camera/ws`.replace(/\/{2,}/g, "/");
     parsed.searchParams.set("token", token);
     parsed.searchParams.set("mode", mode);
     return parsed.toString();

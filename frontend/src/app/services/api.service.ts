@@ -5,6 +5,7 @@ import { environment } from "../../environments/environment";
 import {
   ControlRoomOverviewResponse,
   LiveCameraEventType,
+  LiveCameraIceConfig,
   LiveCameraLogsResponse,
   LiveCameraSessionRecord,
   LiveCameraSessionStatus,
@@ -294,6 +295,10 @@ export class ApiService {
       microphoneEnabled: payload?.microphoneEnabled,
       emergency: payload?.emergency
     });
+  }
+
+  getLiveCameraIceConfig() {
+    return this.http.get<LiveCameraIceConfig>(`${environment.apiBaseUrl}/live-camera/ice-config`);
   }
 
   stopLiveCameraSession(sessionId: string, reason?: string) {
