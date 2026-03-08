@@ -10,14 +10,17 @@ import { errorHandler, notFound } from "./middleware/error";
 import { authRouter } from "./routes/auth";
 import { carsRouter } from "./routes/cars";
 import { dashboardRouter } from "./routes/dashboard";
+import { dispatchesRouter } from "./routes/dispatches";
 import { emergencyPlansRouter } from "./routes/emergencyPlans";
 import { exportsRouter } from "./routes/exports";
 import { householdsRouter } from "./routes/households";
 import { housingUnitsRouter } from "./routes/housingUnits";
 import { incidentsRouter } from "./routes/incidents";
 import { landlordsRouter } from "./routes/landlords";
+import { locationRouter, locationsRouter } from "./routes/locations";
 import { mapReferencesRouter } from "./routes/mapReferences";
 import { notificationsRouter } from "./routes/notifications";
+import { responseUnitsRouter } from "./routes/responseUnits";
 import { rentalAgreementsRouter } from "./routes/rentalAgreements";
 import { usersRouter } from "./routes/users";
 import { zonesRouter } from "./routes/zones";
@@ -52,7 +55,7 @@ app.use(
       return callback(null, false);
     },
     credentials: true,
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Location-Token"],
     methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"]
   })
 );
@@ -70,6 +73,7 @@ app.get("/health", (_req, res) => {
 });
 
 app.use("/auth", authRouter);
+app.use("/location", locationRouter);
 
 app.get(
   "/me",
@@ -77,18 +81,43 @@ app.get(
   asyncHandler(async (req, res) => {
     const user = await prisma.user.findUnique({
       where: { id: req.user!.id },
-      select: { id: true, email: true, fullName: true, role: true, isActive: true }
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        role: true,
+        isActive: true,
+        liveLocationEnabled: true,
+        liveLocationVisible: true,
+        trustedDevice: {
+          select: {
+            isActive: true,
+            lastSeenAt: true
+          }
+        }
+      }
     });
 
     if (!user || !user.isActive) {
       return res.status(401).json({ message: "Unauthorized" });
     }
 
-    return res.json(user);
+    return res.json({
+      id: user.id,
+      email: user.email,
+      fullName: user.fullName,
+      role: user.role,
+      isActive: user.isActive,
+      liveLocationEnabled: user.liveLocationEnabled,
+      liveLocationVisible: user.liveLocationVisible,
+      trustedDeviceAssigned: Boolean(user.trustedDevice?.isActive),
+      trustedDeviceLastSeenAt: user.trustedDevice?.lastSeenAt ?? null
+    });
   })
 );
 
 app.use(requireAuth);
+app.use("/live-tracking", locationRouter);
 app.use("/users", usersRouter);
 app.use("/zones", zonesRouter);
 app.use("/households", householdsRouter);
@@ -102,6 +131,9 @@ app.use("/notifications", notificationsRouter);
 app.use("/map-references", mapReferencesRouter);
 app.use("/dashboard", dashboardRouter);
 app.use("/exports", exportsRouter);
+app.use("/response-units", responseUnitsRouter);
+app.use("/dispatches", dispatchesRouter);
+app.use("/locations", locationsRouter);
 
 app.use(notFound);
 app.use(errorHandler);

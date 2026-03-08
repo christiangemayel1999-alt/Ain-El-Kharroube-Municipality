@@ -11,7 +11,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
-    "prisma:seed": "tsx prisma/seed.ts"
+    "prisma:seed": "tsx prisma/seed.ts",
+    "ensure:local-users": "tsx scripts/ensure-local-users.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

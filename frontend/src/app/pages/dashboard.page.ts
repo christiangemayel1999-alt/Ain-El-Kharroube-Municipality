@@ -14,10 +14,19 @@ import { MatSidenavModule } from "@angular/material/sidenav";
 import { MatSlideToggleModule } from "@angular/material/slide-toggle";
 import { BaseChartDirective } from "ng2-charts";
 import * as L from "leaflet";
-import { DashboardSummary, EmergencyPlan, MapReference, MapReferenceType, NotificationItem, Zone } from "../models";
+import {
+  DashboardSummary,
+  EmergencyPlan,
+  LivePersonLocation,
+  MapReference,
+  MapReferenceType,
+  NotificationItem,
+  Zone
+} from "../models";
 import { ApiService } from "../services/api.service";
 import { AuthService } from "../services/auth.service";
 import { Chart } from "chart.js";
+import { MapLegendComponent } from "../components/map-legend.component";
 
 Chart.register(...registerables);
 type MapMarker = DashboardSummary["mapMarkers"][number];
@@ -89,7 +98,8 @@ const referenceCategoryOptions: ReferenceCategoryOption[] = [
     MatListModule,
     MatSlideToggleModule,
     MatDividerModule,
-    BaseChartDirective
+    BaseChartDirective,
+    MapLegendComponent
   ],
   template: `
     <mat-drawer-container class="drawer-container" [hasBackdrop]="false">
@@ -449,7 +459,22 @@ const referenceCategoryOptions: ReferenceCategoryOption[] = [
                 <mat-slide-toggle [checked]="zoneGuidesEnabled()" (change)="setZoneGuidesEnabled($event.checked)">
                   Zone guide lines
                 </mat-slide-toggle>
+                <mat-slide-toggle
+                  *ngIf="canViewLivePeople()"
+                  [checked]="livePeopleLayerEnabled()"
+                  (change)="setLivePeopleLayerEnabled($event.checked)"
+                >
+                  Live people
+                </mat-slide-toggle>
+                <mat-slide-toggle
+                  *ngIf="canViewLivePeople() && livePeopleLayerEnabled()"
+                  [checked]="livePeopleActiveOnly()"
+                  (change)="setLivePeopleActiveOnly($event.checked)"
+                >
+                  Active trackers only
+                </mat-slide-toggle>
               </div>
+              <app-map-legend></app-map-legend>
               <p class="muted">
                 Heat map shows household density and priority. References include roads/buildings/checkpoints. Labels appear automatically when zooming in.
               </p>
@@ -574,6 +599,31 @@ const referenceCategoryOptions: ReferenceCategoryOption[] = [
                 <div class="kpi"><span>Children (0-17)</span><strong>{{ s.kpis.children0_17 }}</strong></div>
                 <div class="kpi"><span>Elderly (60+)</span><strong>{{ s.kpis.elderly60plus }}</strong></div>
               </div>
+
+              <mat-divider></mat-divider>
+              <h3>Active Incident Response</h3>
+              <mat-list>
+                <mat-list-item *ngFor="let incident of s.activeIncidents.slice(0, 6)">
+                  {{ incidentIcon(incident.type) }} {{ incident.incidentCode }} - {{ incident.title || incident.type }} - {{ incident.status }}
+                </mat-list-item>
+              </mat-list>
+              <p class="muted" *ngIf="!s.activeIncidents.length">No active incidents right now.</p>
+
+              <h3>Response Units</h3>
+              <mat-list>
+                <mat-list-item *ngFor="let unit of s.responseUnits.slice(0, 8)">
+                  {{ unitIcon(unit.type) }} {{ unit.name }} - {{ unit.status }}
+                </mat-list-item>
+              </mat-list>
+              <p class="muted" *ngIf="!s.responseUnits.length">No units configured yet.</p>
+
+              <h3>Active Dispatches</h3>
+              <mat-list>
+                <mat-list-item *ngFor="let dispatch of s.activeDispatches.slice(0, 8)">
+                  📍 {{ unitIcon(dispatch.unit.type) }} {{ dispatch.unit.name }} - {{ dispatch.status }} - {{ dispatch.incident.incidentCode }}
+                </mat-list-item>
+              </mat-list>
+              <p class="muted" *ngIf="!s.activeDispatches.length">No active dispatches.</p>
 
               <mat-divider></mat-divider>
               <h3>Pending safety checks</h3>
@@ -890,25 +940,27 @@ const referenceCategoryOptions: ReferenceCategoryOption[] = [
   styles: [
     `
       .drawer-container {
-        min-height: calc(100vh - 64px);
+        min-height: calc(100dvh - var(--app-toolbar-height));
       }
 
       .dashboard-shell {
         display: grid;
         gap: 1rem;
-        padding: 1rem;
+        padding: var(--page-padding);
       }
 
       .top-grid {
         display: grid;
         gap: 1rem;
-        grid-template-columns: 2fr 1fr;
+        grid-template-columns: 1fr;
       }
 
       .card-title-row {
         display: flex;
         justify-content: space-between;
         align-items: center;
+        flex-wrap: wrap;
+        gap: 0.5rem;
         margin-bottom: 0.5rem;
       }
 
@@ -917,16 +969,18 @@ const referenceCategoryOptions: ReferenceCategoryOption[] = [
         gap: 0.5rem;
         flex-wrap: wrap;
         justify-content: flex-end;
+        width: 100%;
       }
 
       #dashboard-map {
         width: 100%;
-        height: 420px;
+        height: clamp(260px, 48vh, 420px);
         border-radius: 0.5rem;
       }
 
       .queue-card {
         overflow: auto;
+        max-height: min(82vh, 900px);
       }
 
       .emergency-panel {
@@ -1006,11 +1060,12 @@ const referenceCategoryOptions: ReferenceCategoryOption[] = [
         align-items: center;
         justify-content: space-between;
         gap: 0.5rem;
+        flex-wrap: wrap;
       }
 
       .kpi-grid {
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: 1fr;
         gap: 0.75rem;
         margin-bottom: 1rem;
       }
@@ -1034,24 +1089,26 @@ const referenceCategoryOptions: ReferenceCategoryOption[] = [
       .charts-grid {
         display: grid;
         gap: 1rem;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: 1fr;
       }
 
       .chart-card {
         display: flex;
         flex-direction: column;
-        min-height: 340px;
+        min-height: clamp(270px, 45vh, 340px);
       }
 
       .chart-wrap {
         position: relative;
-        height: 260px;
+        height: clamp(190px, 35vh, 260px);
         width: 100%;
       }
 
       .drawer-content {
-        padding: 1rem;
-        width: min(500px, 92vw);
+        padding: var(--page-padding);
+        width: min(500px, 94vw);
+        max-height: 100dvh;
+        overflow-y: auto;
       }
 
       .arrival-form {
@@ -1092,7 +1149,7 @@ const referenceCategoryOptions: ReferenceCategoryOption[] = [
 
       .member-row {
         display: grid;
-        grid-template-columns: 1.3fr 1.2fr 0.8fr 0.8fr auto;
+        grid-template-columns: 1fr;
         gap: 0.5rem;
         align-items: start;
       }
@@ -1112,13 +1169,13 @@ const referenceCategoryOptions: ReferenceCategoryOption[] = [
       .member-extra-grid {
         display: grid;
         gap: 0.5rem;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: 1fr;
       }
 
       .member-car-grid {
         display: grid;
         gap: 0.5rem;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: 1fr;
         grid-column: 1 / -1;
       }
 
@@ -1130,13 +1187,13 @@ const referenceCategoryOptions: ReferenceCategoryOption[] = [
       .coord-grid {
         display: grid;
         gap: 0.5rem;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: 1fr;
       }
 
       .car-grid {
         display: grid;
         gap: 0.5rem;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: 1fr;
       }
 
       .contact-block {
@@ -1154,6 +1211,7 @@ const referenceCategoryOptions: ReferenceCategoryOption[] = [
         display: flex;
         gap: 0.5rem;
         justify-content: flex-end;
+        flex-wrap: wrap;
       }
 
       .button-row.left {
@@ -1256,6 +1314,7 @@ const referenceCategoryOptions: ReferenceCategoryOption[] = [
 
       .table-wrap {
         overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
       }
 
       .report-card {
@@ -1281,7 +1340,7 @@ const referenceCategoryOptions: ReferenceCategoryOption[] = [
 
       .report-metrics {
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: 1fr;
         gap: 0.65rem;
       }
 
@@ -1313,22 +1372,63 @@ const referenceCategoryOptions: ReferenceCategoryOption[] = [
         padding: 0.5rem;
         border-bottom: 1px solid #ddd;
         text-align: left;
+        vertical-align: top;
+        overflow-wrap: anywhere;
       }
 
-      @media (max-width: 1024px) {
-        .top-grid,
-        .charts-grid {
-          grid-template-columns: 1fr;
+      @media (min-width: 680px) {
+        .kpi-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .coord-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
         }
       }
 
-      @media (max-width: 640px) {
-        .coord-grid,
-        .car-grid,
-        .member-row,
+      @media (min-width: 860px) {
+        .member-extra-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (min-width: 1025px) {
+        .top-grid,
+        .charts-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .top-grid {
+          grid-template-columns: 2fr 1fr;
+        }
+
+        .car-grid {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+
+        .report-metrics {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (min-width: 1200px) {
+        .member-row {
+          grid-template-columns: 1.3fr 1.2fr 0.8fr 0.8fr auto;
+        }
+
         .member-extra-grid,
         .member-car-grid {
-          grid-template-columns: 1fr;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+
+        .report-metrics {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 767px) {
+        .dashboard-shell {
+          gap: 0.75rem;
         }
 
         .map-actions {
@@ -1346,21 +1446,21 @@ const referenceCategoryOptions: ReferenceCategoryOption[] = [
           align-items: stretch;
         }
 
+        .button-row {
+          justify-content: stretch;
+        }
+
+        .button-row button {
+          width: 100%;
+        }
+
+        .member-card {
+          padding: 0.55rem;
+        }
+
         .reference-item {
           flex-direction: column;
           align-items: flex-start;
-        }
-
-        .chart-card {
-          min-height: 300px;
-        }
-
-        .chart-wrap {
-          height: 220px;
-        }
-
-        .report-metrics {
-          grid-template-columns: 1fr;
         }
       }
     `
@@ -1402,6 +1502,9 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
   readonly zoneLabelsEnabled = signal(true);
   readonly heatmapEnabled = signal(true);
   readonly zoneGuidesEnabled = signal(true);
+  readonly livePeopleLayerEnabled = signal(true);
+  readonly livePeopleActiveOnly = signal(false);
+  readonly livePeopleLocations = signal<LivePersonLocation[]>([]);
   readonly reportVm = signal<ReportVm | null>(null);
   readonly mapReferenceTypes = referenceCategoryOptions;
   readonly allMapReferences = signal<MapReference[]>([]);
@@ -1467,6 +1570,9 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
   private heatLayer = L.layerGroup();
   private tempLayer = L.layerGroup();
   private emergencyLayer = L.layerGroup();
+  private incidentLayer = L.layerGroup();
+  private responseUnitLayer = L.layerGroup();
+  private livePeopleLayer = L.layerGroup();
   private villageBorderLayer = L.layerGroup();
   private zoneGuidesLayer = L.layerGroup();
   private readonly householdMarkersById = new Map<string, L.Marker>();
@@ -1476,20 +1582,28 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
   private readonly mapCenter: L.LatLngTuple = [33.93444, 35.69972];
   private readonly sectionCount = 10;
   private readonly borderStorageKey = "ain_el_kharroube_manual_border_points_v1";
+  private livePeoplePollTimer: ReturnType<typeof setInterval> | null = null;
   private resizeHandler = () => this.map?.invalidateSize();
 
   ngAfterViewInit() {
     this.loadZones();
     this.loadDashboard();
     this.loadNotifications();
+    if (!this.canViewLivePeople()) {
+      this.livePeopleLayerEnabled.set(false);
+    }
     if (this.isAdminUser()) {
       this.loadMapReferencesForAdmin();
     }
     this.initMap();
+    if (this.canViewLivePeople() && this.livePeopleLayerEnabled()) {
+      this.startLivePeoplePolling();
+    }
     window.addEventListener("resize", this.resizeHandler);
   }
 
   ngOnDestroy() {
+    this.stopLivePeoplePolling();
     window.removeEventListener("resize", this.resizeHandler);
     this.map?.remove();
   }
@@ -1853,6 +1967,30 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
     this.renderZoneGuides();
   }
 
+  setLivePeopleLayerEnabled(enabled: boolean) {
+    this.livePeopleLayerEnabled.set(enabled);
+
+    if (!enabled) {
+      this.stopLivePeoplePolling();
+      this.livePeopleLayer.clearLayers();
+      return;
+    }
+
+    if (!this.canViewLivePeople()) {
+      this.livePeopleLayerEnabled.set(false);
+      return;
+    }
+
+    this.startLivePeoplePolling();
+  }
+
+  setLivePeopleActiveOnly(enabled: boolean) {
+    this.livePeopleActiveOnly.set(enabled);
+    if (this.livePeopleLayerEnabled() && this.canViewLivePeople()) {
+      this.loadLivePeopleLocations();
+    }
+  }
+
   addPolicePost() {
     this.policePostsArray.push(this.createPolicePostGroup());
   }
@@ -1979,8 +2117,42 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
     return this.auth.currentUser()?.role === "ADMIN";
   }
 
+  canViewLivePeople() {
+    const role = this.auth.currentUser()?.role;
+    return role === "ADMIN" || role === "CASE_WORKER" || role === "POLICE";
+  }
+
   mapReferenceTypeLabel(type: MapReferenceType) {
     return this.mapReferenceTypes.find((option) => option.value === type)?.label ?? type;
+  }
+
+  incidentIcon(type: string) {
+    if (type === "PROTECTION") {
+      return "\uD83D\uDE98";
+    }
+    if (type === "MEDICAL") {
+      return "\uD83D\uDE91";
+    }
+    if (type === "UTILITY") {
+      return "\u26A0\uFE0F";
+    }
+    if (type === "HOUSING") {
+      return "\uD83C\uDFE0";
+    }
+    return "\u26A0\uFE0F";
+  }
+
+  unitIcon(type: string) {
+    if (type === "POLICE") {
+      return "\uD83D\uDE93";
+    }
+    if (type === "CHECKPOINT") {
+      return "\uD83D\uDEA7";
+    }
+    if (type === "MEDICAL") {
+      return "\uD83D\uDE91";
+    }
+    return "\uD83D\uDCCD";
   }
 
   setHouseholdSearchQuery(query: string) {
@@ -2389,6 +2561,9 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
       this.refreshZoneLabels(summary);
       this.refreshHeatMap(summary);
       this.refreshEmergencyOverlay(summary);
+      this.refreshIncidentMarkers(summary);
+      this.refreshResponseUnitMarkers(summary);
+      this.refreshLivePeopleMarkers();
       this.updateCharts(summary);
       this.deferMapResize();
     });
@@ -2424,6 +2599,38 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
       },
       error: () => {
         this.notificationError.set("Could not load notifications.");
+      }
+    });
+  }
+
+  private startLivePeoplePolling() {
+    this.stopLivePeoplePolling();
+    this.loadLivePeopleLocations();
+    this.livePeoplePollTimer = setInterval(() => this.loadLivePeopleLocations(), 12_000);
+  }
+
+  private stopLivePeoplePolling() {
+    if (this.livePeoplePollTimer) {
+      clearInterval(this.livePeoplePollTimer);
+      this.livePeoplePollTimer = null;
+    }
+  }
+
+  private loadLivePeopleLocations() {
+    if (!this.canViewLivePeople()) {
+      this.livePeopleLocations.set([]);
+      this.refreshLivePeopleMarkers();
+      return;
+    }
+
+    this.api.getLatestLocations(this.livePeopleActiveOnly(), 120).subscribe({
+      next: (locations) => {
+        this.livePeopleLocations.set(locations);
+        this.refreshLivePeopleMarkers();
+      },
+      error: () => {
+        this.livePeopleLocations.set([]);
+        this.refreshLivePeopleMarkers();
       }
     });
   }
@@ -2465,6 +2672,9 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
     this.zoneLabelLayer.addTo(this.map);
     this.tempLayer.addTo(this.map);
     this.emergencyLayer.addTo(this.map);
+    this.incidentLayer.addTo(this.map);
+    this.responseUnitLayer.addTo(this.map);
+    this.livePeopleLayer.addTo(this.map);
     this.villageBorderLayer.addTo(this.map);
     this.zoneGuidesLayer.addTo(this.map);
     this.loadBorderFromStorage();
@@ -2477,6 +2687,9 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
       this.refreshZoneLabels(summary);
       this.refreshHeatMap(summary);
       this.refreshEmergencyOverlay(summary);
+      this.refreshIncidentMarkers(summary);
+      this.refreshResponseUnitMarkers(summary);
+      this.refreshLivePeopleMarkers();
     }
 
     this.map.on("click", (event: L.LeafletMouseEvent) => {
@@ -2532,6 +2745,9 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
       this.refreshMapMarkers(summary);
       this.refreshMapReferences(summary);
       this.refreshZoneLabels(summary);
+      this.refreshIncidentMarkers(summary);
+      this.refreshResponseUnitMarkers(summary);
+      this.refreshLivePeopleMarkers();
     });
   }
 
@@ -2889,6 +3105,111 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
     }
   }
 
+  private refreshIncidentMarkers(summary: DashboardSummary) {
+    this.incidentLayer.clearLayers();
+
+    for (const incident of summary.incidentMarkers) {
+      if (incident.locationLat == null || incident.locationLng == null) {
+        continue;
+      }
+
+      const severityColor =
+        incident.severity === "CRITICAL"
+          ? "#b91c1c"
+          : incident.severity === "HIGH"
+            ? "#dc2626"
+            : incident.severity === "MEDIUM"
+              ? "#f97316"
+              : "#16a34a";
+      const iconText = this.incidentIcon(incident.type);
+
+      const marker = L.marker([incident.locationLat, incident.locationLng], {
+        icon: L.divIcon({
+          className: "",
+          iconSize: [28, 28],
+          iconAnchor: [14, 14],
+          popupAnchor: [0, -12],
+          html: `<div style="width:28px;height:28px;border-radius:8px;background:${severityColor};border:2px solid rgba(255,255,255,.95);color:#fff;font-size:14px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.35);">${this.escapeHtml(iconText)}</div>`
+        })
+      });
+
+      const title = incident.title?.trim() || incident.type;
+      marker.bindPopup(
+        `${this.escapeHtml(iconText)} ${this.escapeHtml(incident.incidentCode)} | ${this.escapeHtml(title)} | ${this.escapeHtml(incident.status)}${
+          incident.locationLabel ? ` | ${this.escapeHtml(incident.locationLabel)}` : ""
+        }`
+      );
+
+      marker.addTo(this.incidentLayer);
+    }
+  }
+
+  private refreshResponseUnitMarkers(summary: DashboardSummary) {
+    this.responseUnitLayer.clearLayers();
+    const dispatchByUnitId = new Map(summary.activeDispatches.map((dispatch) => [dispatch.unitId, dispatch]));
+
+    for (const unit of summary.responseUnits) {
+      if (unit.latitude == null || unit.longitude == null) {
+        continue;
+      }
+
+      const statusColor =
+        unit.status === "AVAILABLE" ? "#16a34a" : unit.status === "BUSY" ? "#f97316" : "#64748b";
+      const iconText = this.unitIcon(unit.type);
+      const dispatch = dispatchByUnitId.get(unit.id);
+
+      const marker = L.marker([unit.latitude, unit.longitude], {
+        icon: L.divIcon({
+          className: "",
+          iconSize: [26, 26],
+          iconAnchor: [13, 13],
+          popupAnchor: [0, -12],
+          html: `<div style="width:26px;height:26px;border-radius:999px;background:${statusColor};border:2px solid rgba(255,255,255,.95);color:#fff;font-size:13px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.35);">${this.escapeHtml(iconText)}</div>`
+        })
+      });
+
+      const popupParts = [
+        `${iconText} ${unit.name}`,
+        `${unit.type} | ${unit.status}`,
+        dispatch ? `Dispatch: ${dispatch.status} (${dispatch.incident.incidentCode})` : null
+      ].filter((part): part is string => Boolean(part));
+
+      marker.bindPopup(popupParts.map((part) => this.escapeHtml(part)).join(" | "));
+      marker.addTo(this.responseUnitLayer);
+    }
+  }
+
+  private refreshLivePeopleMarkers() {
+    this.livePeopleLayer.clearLayers();
+    if (!this.livePeopleLayerEnabled() || !this.canViewLivePeople()) {
+      return;
+    }
+
+    for (const person of this.livePeopleLocations()) {
+      if (person.latitude == null || person.longitude == null) {
+        continue;
+      }
+
+      const statusText = person.isTrackingActive
+        ? person.isStale
+          ? "STALE"
+          : "ACTIVE"
+        : "INACTIVE";
+      const icon = this.createLivePeopleIcon(statusText);
+      const marker = L.marker([person.latitude, person.longitude], { icon });
+
+      const popupParts = [
+        person.fullName,
+        `Role: ${person.role}`,
+        `Tracking: ${statusText}`,
+        `Last update: ${this.formatLocationTime(person.lastReceivedAt)}`,
+        person.accuracyM != null ? `Accuracy: ${Math.round(person.accuracyM)}m` : "Accuracy: N/A"
+      ];
+      marker.bindPopup(popupParts.map((part) => this.escapeHtml(part)).join(" | "));
+      marker.addTo(this.livePeopleLayer);
+    }
+  }
+
   private updateCharts(summary: DashboardSummary) {
     this.householdsByZoneChart = {
       labels: summary.charts.householdsByZone.map((i) => i.zone),
@@ -3133,6 +3454,31 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
       popupAnchor: [0, -12],
       html: `<div style="width:30px;height:30px;border-radius:8px;background:${color};border:2px solid rgba(255,255,255,.95);color:#fff;font-weight:700;font-size:11px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.35);">${iconText}</div>`
     });
+  }
+
+  private createLivePeopleIcon(status: "ACTIVE" | "STALE" | "INACTIVE") {
+    const color =
+      status === "ACTIVE" ? "#16a34a" : status === "STALE" ? "#f97316" : "#64748b";
+    const text = status === "ACTIVE" ? "L" : status === "STALE" ? "S" : "O";
+
+    return L.divIcon({
+      className: "",
+      iconSize: [28, 28],
+      iconAnchor: [14, 14],
+      popupAnchor: [0, -12],
+      html: `<div style="width:28px;height:28px;border-radius:999px;background:${color};border:2px solid rgba(255,255,255,.95);color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.35);">${text}</div>`
+    });
+  }
+
+  private formatLocationTime(value: string | null) {
+    if (!value) {
+      return "Never";
+    }
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return "Unknown";
+    }
+    return date.toLocaleTimeString();
   }
 
   private escapeHtml(value: string) {

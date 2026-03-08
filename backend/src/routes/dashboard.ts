@@ -26,7 +26,10 @@ dashboardRouter.get(
       householdsWithZone,
       mapHouseholds,
       mapReferences,
-      activeEmergencyPlan
+      activeEmergencyPlan,
+      activeIncidents,
+      responseUnits,
+      activeDispatches
     ] = await Promise.all([
       prisma.household.findMany({ where: { status: "ACTIVE" } }),
       prisma.housingUnit.count({ where: { status: "OCCUPIED" } }),
@@ -80,6 +83,9 @@ dashboardRouter.get(
       prisma.emergencyPlan.findFirst({
         where: { isActive: true },
         include: {
+          steps: {
+            orderBy: { stepOrder: "asc" }
+          },
           policePosts: {
             orderBy: { createdAt: "asc" }
           },
@@ -91,6 +97,63 @@ dashboardRouter.get(
             }
           }
         }
+      }),
+      prisma.incident.findMany({
+        where: {
+          status: {
+            in: ["REPORTED", "ACTIVE_RESPONSE", "CONTAINED", "OPEN", "IN_PROGRESS"]
+          }
+        },
+        include: {
+          vehicle: true,
+          emergencyPlan: {
+            select: { id: true, name: true, type: true, severity: true }
+          },
+          dispatches: {
+            include: {
+              unit: true,
+              officer: { select: { id: true, fullName: true, role: true } }
+            },
+            orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }]
+          }
+        },
+        orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+        take: 50
+      }),
+      prisma.responseUnit.findMany({
+        include: {
+          assignedOfficer: {
+            select: { id: true, fullName: true, role: true }
+          }
+        },
+        orderBy: [{ status: "asc" }, { type: "asc" }, { name: "asc" }]
+      }),
+      prisma.incidentDispatch.findMany({
+        where: {
+          status: {
+            in: ["NOTIFIED", "ACKNOWLEDGED", "EN_ROUTE", "ARRIVED", "INVESTIGATING"]
+          }
+        },
+        include: {
+          incident: {
+            select: {
+              id: true,
+              incidentCode: true,
+              title: true,
+              type: true,
+              priority: true,
+              severity: true,
+              status: true,
+              locationLabel: true,
+              locationLat: true,
+              locationLng: true
+            }
+          },
+          unit: true,
+          officer: { select: { id: true, fullName: true, role: true } }
+        },
+        orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+        take: 100
       })
     ]);
 
@@ -202,7 +265,25 @@ dashboardRouter.get(
       mapReferences,
       zoneLabels,
       recentArrivals: recentArrivals.slice(-20).reverse(),
-      emergencyPlan: activeEmergencyPlan
+      emergencyPlan: activeEmergencyPlan,
+      activeIncidents,
+      incidentMarkers: activeIncidents
+        .filter((incident) => incident.locationLat !== null && incident.locationLng !== null)
+        .map((incident) => ({
+          id: incident.id,
+          incidentCode: incident.incidentCode,
+          title: incident.title,
+          type: incident.type,
+          priority: incident.priority,
+          severity: incident.severity,
+          status: incident.status,
+          locationLabel: incident.locationLabel,
+          locationLat: incident.locationLat,
+          locationLng: incident.locationLng,
+          vehicle: incident.vehicle
+        })),
+      responseUnits,
+      activeDispatches
     });
   })
 );

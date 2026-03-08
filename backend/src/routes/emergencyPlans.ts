@@ -1,4 +1,10 @@
-import { Prisma, Role } from "@prisma/client";
+import {
+  EmergencyPlanType,
+  EmergencySeverity,
+  Prisma,
+  Role,
+  UnitType
+} from "@prisma/client";
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
@@ -15,22 +21,28 @@ const policePostSchema = z.object({
   notes: z.string().trim().max(300).optional().nullable()
 });
 
-const emergencyPlanSchemaBase = z.object({
-  name: z.string().trim().min(2).max(120),
-  description: z.string().trim().max(500).optional().nullable(),
-  isActive: z.boolean().default(true),
-  policePosts: z.array(policePostSchema).default([])
+const planStepSchema = z.object({
+  stepOrder: z.coerce.number().int().min(1),
+  title: z.string().trim().min(2).max(140),
+  description: z.string().trim().max(1000).optional().nullable(),
+  icon: z.string().trim().max(24).optional().nullable(),
+  unitTypeRequired: z.nativeEnum(UnitType).default(UnitType.POLICE),
+  isRequired: z.boolean().default(true)
 });
 
-const createEmergencyPlanSchema = emergencyPlanSchemaBase
-  .superRefine((data, ctx) => {
-    if (!data.policePosts.length) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Add at least one police post"
-      });
-    }
-  });
+const emergencyPlanSchemaBase = z.object({
+  name: z.string().trim().min(2).max(120),
+  type: z.nativeEnum(EmergencyPlanType).default(EmergencyPlanType.CUSTOM),
+  severity: z.nativeEnum(EmergencySeverity).default(EmergencySeverity.MEDIUM),
+  description: z.string().trim().max(1000).optional().nullable(),
+  defaultNotificationTitle: z.string().trim().max(180).optional().nullable(),
+  defaultNotificationMessage: z.string().trim().max(2000).optional().nullable(),
+  isActive: z.boolean().default(false),
+  policePosts: z.array(policePostSchema).default([]),
+  steps: z.array(planStepSchema).default([])
+});
+
+const createEmergencyPlanSchema = emergencyPlanSchemaBase;
 
 const updateEmergencyPlanSchema = emergencyPlanSchemaBase.partial();
 
@@ -39,6 +51,8 @@ export const emergencyPlansRouter = Router();
 type ActivationPlan = {
   id: string;
   name: string;
+  defaultNotificationTitle: string | null;
+  defaultNotificationMessage: string | null;
   policePosts: Array<{
     label: string;
     lat: number;
@@ -62,14 +76,15 @@ async function notifyPoliceForPlanActivation(tx: Prisma.TransactionClient, plan:
   const posts = plan.policePosts;
   const notifications = policeUsers.map((user, index) => {
     const assigned = posts.length ? posts[index % posts.length] : null;
-    const message = assigned
-      ? `Emergency plan "${plan.name}" is active. Report to ${assigned.label} at (${assigned.lat.toFixed(5)}, ${assigned.lng.toFixed(5)}).`
-      : `Emergency plan "${plan.name}" is active. Report to command center for assignment.`;
+    const title = plan.defaultNotificationTitle?.trim() || `Emergency Plan Activated: ${plan.name}`;
+    const fallbackMessage = assigned
+      ? `Plan "${plan.name}" is active. Report to ${assigned.label} at (${assigned.lat.toFixed(5)}, ${assigned.lng.toFixed(5)}).`
+      : `Plan "${plan.name}" is active. Report to command center for assignment.`;
 
     return {
       userId: user.id,
-      title: `Emergency Plan Activated: ${plan.name}`,
-      message,
+      title,
+      message: plan.defaultNotificationMessage?.trim() || fallbackMessage,
       emergencyPlanId: plan.id,
       policePostLabel: assigned?.label ?? null,
       targetLat: assigned?.lat ?? null,
@@ -85,12 +100,13 @@ emergencyPlansRouter.get(
   asyncHandler(async (_req, res) => {
     const plans = await prisma.emergencyPlan.findMany({
       include: {
-        policePosts: true,
+        steps: { orderBy: { stepOrder: "asc" } },
+        policePosts: { orderBy: { createdAt: "asc" } },
         createdBy: {
           select: { id: true, fullName: true, email: true }
         }
       },
-      orderBy: [{ isActive: "desc" }, { createdAt: "desc" }]
+      orderBy: [{ isActive: "desc" }, { updatedAt: "desc" }]
     });
 
     return res.json(plans);
@@ -103,7 +119,8 @@ emergencyPlansRouter.get(
     const activePlan = await prisma.emergencyPlan.findFirst({
       where: { isActive: true },
       include: {
-        policePosts: true,
+        steps: { orderBy: { stepOrder: "asc" } },
+        policePosts: { orderBy: { createdAt: "asc" } },
         createdBy: { select: { id: true, fullName: true, email: true } }
       },
       orderBy: { updatedAt: "desc" }
@@ -128,10 +145,35 @@ emergencyPlansRouter.post(
         });
       }
 
+      const incomingSteps =
+        payload.steps.length > 0
+          ? payload.steps
+          : [
+              {
+                stepOrder: 1,
+                title: "Initial field response",
+                description: "Nearest unit acknowledges and proceeds to location.",
+                icon: "ALERT",
+                unitTypeRequired: UnitType.POLICE,
+                isRequired: true
+              }
+            ];
+      const orderedSteps = incomingSteps
+        .slice()
+        .sort((a, b) => a.stepOrder - b.stepOrder)
+        .map((step, index) => ({
+          ...step,
+          stepOrder: index + 1
+        }));
+
       const plan = await tx.emergencyPlan.create({
         data: {
           name: payload.name,
+          type: payload.type,
+          severity: payload.severity,
           description: payload.description ?? null,
+          defaultNotificationTitle: payload.defaultNotificationTitle ?? null,
+          defaultNotificationMessage: payload.defaultNotificationMessage ?? null,
           isActive: payload.isActive,
           createdByUserId: req.user!.id,
           policePosts: {
@@ -142,9 +184,20 @@ emergencyPlansRouter.post(
               officersCount: post.officersCount,
               notes: post.notes ?? null
             }))
+          },
+          steps: {
+            create: orderedSteps.map((step) => ({
+              stepOrder: step.stepOrder,
+              title: step.title,
+              description: step.description ?? null,
+              icon: step.icon ?? null,
+              unitTypeRequired: step.unitTypeRequired,
+              isRequired: step.isRequired
+            }))
           }
         },
         include: {
+          steps: { orderBy: { stepOrder: "asc" } },
           policePosts: true
         }
       });
@@ -153,6 +206,8 @@ emergencyPlansRouter.post(
         await notifyPoliceForPlanActivation(tx, {
           id: plan.id,
           name: plan.name,
+          defaultNotificationTitle: plan.defaultNotificationTitle,
+          defaultNotificationMessage: plan.defaultNotificationMessage,
           policePosts: plan.policePosts.map((post) => ({
             label: post.label,
             lat: post.lat,
@@ -175,22 +230,17 @@ emergencyPlansRouter.patch(
   validateBody(updateEmergencyPlanSchema),
   asyncHandler(async (req, res) => {
     const payload = req.body as z.infer<typeof updateEmergencyPlanSchema>;
-    if (payload.policePosts && payload.policePosts.length === 0) {
-      return res.status(400).json({ message: "At least one police post is required" });
-    }
 
     const updated = await prisma.$transaction(async (tx) => {
       const existing = await tx.emergencyPlan.findUnique({
         where: { id: req.params.id },
-        select: { isActive: true }
+        select: { id: true, isActive: true }
       });
-
       if (!existing) {
         return null;
       }
 
-      const activatedNow = payload.isActive === true && existing.isActive === false;
-      if (payload.isActive) {
+      if (payload.isActive === true) {
         await tx.emergencyPlan.updateMany({
           where: { isActive: true, id: { not: req.params.id } },
           data: { isActive: false }
@@ -201,7 +251,11 @@ emergencyPlansRouter.patch(
         where: { id: req.params.id },
         data: {
           name: payload.name,
+          type: payload.type,
+          severity: payload.severity,
           description: payload.description,
+          defaultNotificationTitle: payload.defaultNotificationTitle,
+          defaultNotificationMessage: payload.defaultNotificationMessage,
           isActive: payload.isActive
         }
       });
@@ -224,18 +278,60 @@ emergencyPlansRouter.patch(
         }
       }
 
+      if (payload.steps) {
+        await tx.emergencyPlanStep.deleteMany({
+          where: { planId: req.params.id }
+        });
+        const incomingSteps =
+          payload.steps.length > 0
+            ? payload.steps
+            : [
+                {
+                  stepOrder: 1,
+                  title: "Initial field response",
+                  description: "Nearest unit acknowledges and proceeds to location.",
+                  icon: "ALERT",
+                  unitTypeRequired: UnitType.POLICE,
+                  isRequired: true
+                }
+              ];
+        if (incomingSteps.length) {
+          const orderedSteps = incomingSteps
+            .slice()
+            .sort((a, b) => a.stepOrder - b.stepOrder)
+            .map((step, index) => ({
+              ...step,
+              stepOrder: index + 1
+            }));
+          await tx.emergencyPlanStep.createMany({
+            data: orderedSteps.map((step) => ({
+              planId: req.params.id,
+              stepOrder: step.stepOrder,
+              title: step.title,
+              description: step.description ?? null,
+              icon: step.icon ?? null,
+              unitTypeRequired: step.unitTypeRequired,
+              isRequired: step.isRequired
+            }))
+          });
+        }
+      }
+
       const plan = await tx.emergencyPlan.findUnique({
         where: { id: req.params.id },
         include: {
+          steps: { orderBy: { stepOrder: "asc" } },
           policePosts: true,
           createdBy: { select: { id: true, fullName: true, email: true } }
         }
       });
 
-      if (plan && activatedNow) {
+      if (plan && payload.isActive === true && existing.isActive === false) {
         await notifyPoliceForPlanActivation(tx, {
           id: plan.id,
           name: plan.name,
+          defaultNotificationTitle: plan.defaultNotificationTitle,
+          defaultNotificationMessage: plan.defaultNotificationMessage,
           policePosts: plan.policePosts.map((post) => ({
             label: post.label,
             lat: post.lat,

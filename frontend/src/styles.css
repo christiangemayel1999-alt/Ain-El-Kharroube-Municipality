@@ -1,18 +1,90 @@
 @import "@angular/material/prebuilt-themes/indigo-pink.css";
 
+:root {
+  --bp-mobile-max: 599px;
+  --bp-tablet-max: 1023px;
+  --bp-desktop-min: 1024px;
+  --bp-wide-min: 1440px;
+  --app-toolbar-height: 64px;
+  --page-padding: clamp(0.75rem, 2.2vw, 1.25rem);
+}
+
+@media (max-width: 767px) {
+  :root {
+    --app-toolbar-height: 56px;
+  }
+}
+
 html,
 body {
+  height: 100%;
   margin: 0;
   font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
   background: #f4f7f5;
   color: #1f2937;
+  overflow-x: hidden;
+  line-height: 1.4;
 }
 
 * {
   box-sizing: border-box;
+  min-width: 0;
+}
+
+app-root {
+  display: block;
+  min-height: 100dvh;
 }
 
 mat-card {
   border-radius: 12px;
+}
+
+img,
+svg,
+video,
+canvas {
+  max-width: 100%;
+  height: auto;
+}
+
+a,
+button,
+[mat-button],
+[mat-raised-button],
+[mat-stroked-button],
+[mat-icon-button] {
+  touch-action: manipulation;
+}
+
+button,
+[mat-button],
+[mat-raised-button],
+[mat-stroked-button] {
+  min-height: 40px;
+}
+
+mat-form-field {
+  width: 100%;
+}
+
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.table-wrap table {
+  min-width: 640px;
+}
+
+@media (max-width: 767px) {
+  .table-wrap table {
+    min-width: 560px;
+  }
+}
+
+.page-shell {
+  padding: var(--page-padding);
 }
 

@@ -75,12 +75,12 @@ import { ApiService } from "../services/api.service";
                   (click)="selectCar(car)"
                   [class.active]="selectedCar()?.recordId === car.recordId"
                 >
-                  <td>{{ car.carPlate || "-" }}</td>
-                  <td>{{ car.carModel || "-" }}</td>
-                  <td>{{ car.carColor || "-" }}</td>
-                  <td>{{ displayMemberName(car) }}</td>
-                  <td>{{ car.memberRelationshipToHead || "-" }}</td>
-                  <td>{{ car.zone.name || "-" }}</td>
+                  <td data-label="Plate">{{ car.carPlate || "-" }}</td>
+                  <td data-label="Model">{{ car.carModel || "-" }}</td>
+                  <td data-label="Color">{{ car.carColor || "-" }}</td>
+                  <td data-label="Member">{{ displayMemberName(car) }}</td>
+                  <td data-label="Relationship">{{ car.memberRelationshipToHead || "-" }}</td>
+                  <td data-label="Section">{{ car.zone.name || "-" }}</td>
                 </tr>
               </tbody>
             </table>
@@ -112,13 +112,13 @@ import { ApiService } from "../services/api.service";
   styles: [
     `
       .shell {
-        padding: 1rem;
+        padding: var(--page-padding);
       }
 
       .filters {
         display: grid;
         gap: 0.75rem;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: 1fr;
         margin-bottom: 0.75rem;
         align-items: center;
       }
@@ -126,16 +126,19 @@ import { ApiService } from "../services/api.service";
       .content-grid {
         display: grid;
         gap: 0.75rem;
-        grid-template-columns: 2fr 1fr;
+        grid-template-columns: 1fr;
       }
 
       .table-wrap {
+        border: 1px solid #e2e8f0;
+        border-radius: 0.5rem;
         overflow-x: auto;
       }
 
       table {
         width: 100%;
         border-collapse: collapse;
+        min-width: 760px;
       }
 
       th,
@@ -143,6 +146,7 @@ import { ApiService } from "../services/api.service";
         border-bottom: 1px solid #d9e2e8;
         text-align: left;
         padding: 0.5rem;
+        overflow-wrap: anywhere;
       }
 
       tbody tr {
@@ -177,10 +181,70 @@ import { ApiService } from "../services/api.service";
         font-weight: 600;
       }
 
-      @media (max-width: 1024px) {
-        .filters,
+      @media (min-width: 760px) {
+        .filters {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (min-width: 1200px) {
+        .filters {
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
+
         .content-grid {
-          grid-template-columns: 1fr;
+          grid-template-columns: 2fr 1fr;
+        }
+      }
+
+      @media (max-width: 767px) {
+        .table-wrap {
+          border: 0;
+          overflow: visible;
+        }
+
+        table,
+        tbody,
+        tr,
+        td {
+          display: block;
+          width: 100%;
+        }
+
+        thead {
+          display: none;
+        }
+
+        table {
+          min-width: 0;
+        }
+
+        tr {
+          border: 1px solid #d9e2e8;
+          border-radius: 0.55rem;
+          margin-bottom: 0.65rem;
+          padding: 0.2rem 0.65rem;
+          background: #fff;
+        }
+
+        td {
+          border-bottom: 1px dashed #dbe1ea;
+          padding: 0.5rem 0;
+          display: flex;
+          justify-content: space-between;
+          gap: 0.6rem;
+        }
+
+        td::before {
+          content: attr(data-label);
+          font-weight: 600;
+          color: #475569;
+          font-size: 0.82rem;
+          flex: 0 0 auto;
+        }
+
+        td:last-child {
+          border-bottom: 0;
         }
       }
     `

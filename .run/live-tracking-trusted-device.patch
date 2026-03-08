@@ -1,0 +1,2919 @@
+diff --git a/backend/prisma/schema.prisma b/backend/prisma/schema.prisma
+index d5a5a99..971c00f 100644
+--- a/backend/prisma/schema.prisma
++++ b/backend/prisma/schema.prisma
+@@ -15,6 +15,17 @@ enum Role {
+   POLICE
+ }
+ 
++enum LocationUpdateSource {
++  BROWSER_GEOLOCATION
++  SHARE_LINK
++  MANUAL_OVERRIDE
++}
++
++enum LocationSessionSource {
++  AUTHENTICATED_USER
++  SHARE_TOKEN
++}
++
+ enum HousingType {
+   RENTAL
+   HOST
+@@ -66,10 +77,70 @@ enum IncidentPriority {
+ }
+ 
+ enum IncidentStatus {
+-  OPEN
+-  IN_PROGRESS
++  DRAFT
++  REPORTED
++  ACTIVE_RESPONSE
++  CONTAINED
+   RESOLVED
+   CLOSED
++  CANCELLED
++  // Legacy values kept for backward compatibility with old records.
++  OPEN
++  IN_PROGRESS
++}
++
++enum EmergencyPlanType {
++  SUSPICIOUS_VEHICLE
++  SUSPICIOUS_PERSON
++  ARMED_THREAT
++  MEDICAL_EMERGENCY
++  VILLAGE_LOCKDOWN
++  CUSTOM
++}
++
++enum EmergencySeverity {
++  LOW
++  MEDIUM
++  HIGH
++  CRITICAL
++}
++
++enum UnitType {
++  POLICE
++  CHECKPOINT
++  MEDICAL
++}
++
++enum UnitStatus {
++  AVAILABLE
++  BUSY
++  OFFLINE
++}
++
++enum DispatchStatus {
++  NOTIFIED
++  ACKNOWLEDGED
++  EN_ROUTE
++  ARRIVED
++  INVESTIGATING
++  COMPLETED
++  UNAVAILABLE
++}
++
++enum IncidentTimelineEventType {
++  INCIDENT_CREATED
++  VEHICLE_UPDATED
++  PLAN_ACTIVATED
++  NOTIFICATIONS_SENT
++  OFFICER_ACKNOWLEDGED
++  UNIT_EN_ROUTE
++  UNIT_ARRIVED
++  CHECKPOINT_ACTIVATED
++  MEDICAL_SUPPORT_REQUESTED
++  INCIDENT_RESOLVED
++  INCIDENT_CLOSED
++  DISPATCH_STATUS_CHANGED
++  NOTE_ADDED
+ }
+ 
+ enum MapReferenceType {
+@@ -92,13 +163,143 @@ model User {
+   fullName     String
+   role         Role
+   isActive     Boolean     @default(true)
++  liveLocationEnabled Boolean @default(false)
++  liveLocationVisible Boolean @default(false)
+   createdAt    DateTime    @default(now())
+   updatedAt    DateTime    @updatedAt
+ 
+   incidentsAssigned Incident[] @relation("IncidentAssignedUser")
++  dispatches        IncidentDispatch[] @relation("IncidentDispatchOfficer")
++  assignedUnits     ResponseUnit[] @relation("ResponseUnitAssignedOfficer")
++  timelineEvents    IncidentTimeline[] @relation("IncidentTimelineCreatedBy")
+   auditLogs         AuditLog[]
+   emergencyPlans    EmergencyPlan[] @relation("EmergencyPlanCreatedBy")
+   notifications     Notification[]
++  trustedDevice     UserTrustedDevice? @relation("UserTrustedDeviceForUser")
++  trustedDeviceResets UserTrustedDevice[] @relation("UserTrustedDeviceResetBy")
++  liveLocationState LiveLocationState?
++  liveLocationPoints LocationPoint[]
++  locationSharingSessions LocationSharingSession[]
++  locationShareTokens LocationShareToken[] @relation("LocationShareTokenForUser")
++  createdLocationShareTokens LocationShareToken[] @relation("LocationShareTokenCreatedBy")
++}
++
++model UserTrustedDevice {
++  id               String   @id @default(uuid())
++  userId           String   @unique
++  persistentIdHash String
++  fingerprintHash  String
++  deviceLabel      String?
++  userAgent        String?
++  platform         String?
++  browserLanguage  String?
++  timezone         String?
++  screen           String?
++  firstTrustedAt   DateTime @default(now())
++  lastSeenAt       DateTime @default(now())
++  resetAt          DateTime?
++  resetByUserId    String?
++  isActive         Boolean  @default(true)
++  createdAt        DateTime @default(now())
++  updatedAt        DateTime @updatedAt
++
++  user      User                   @relation("UserTrustedDeviceForUser", fields: [userId], references: [id], onDelete: Cascade)
++  resetBy   User?                  @relation("UserTrustedDeviceResetBy", fields: [resetByUserId], references: [id], onDelete: SetNull)
++  sessions  LocationSharingSession[]
++
++  @@index([isActive, lastSeenAt])
++  @@index([persistentIdHash])
++}
++
++model LiveLocationState {
++  userId           String   @id
++  isSharing        Boolean  @default(false)
++  lastLatitude     Float?
++  lastLongitude    Float?
++  lastAccuracyM    Float?
++  lastRecordedAt   DateTime?
++  lastReceivedAt   DateTime?
++  lastSource       LocationUpdateSource?
++  lastBatteryLevel Int?
++  lastPointId      String?
++  updatedAt        DateTime @updatedAt
++
++  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
++  lastPoint LocationPoint? @relation("LastLiveLocationPoint", fields: [lastPointId], references: [id], onDelete: SetNull)
++
++  @@index([isSharing, lastReceivedAt])
++  @@index([lastReceivedAt])
++}
++
++model LocationSharingSession {
++  id            String                @id @default(uuid())
++  userId        String
++  source        LocationSessionSource
++  startedAt     DateTime              @default(now())
++  stoppedAt     DateTime?
++  isActive      Boolean               @default(true)
++  stoppedReason String?
++  tokenId       String?
++  trustedDeviceId String?
++  createdAt     DateTime              @default(now())
++  updatedAt     DateTime              @updatedAt
++
++  user   User                @relation(fields: [userId], references: [id], onDelete: Cascade)
++  token  LocationShareToken? @relation(fields: [tokenId], references: [id], onDelete: SetNull)
++  trustedDevice UserTrustedDevice? @relation(fields: [trustedDeviceId], references: [id], onDelete: SetNull)
++  points LocationPoint[]
++
++  @@index([userId, isActive])
++  @@index([startedAt])
++  @@index([trustedDeviceId, isActive])
++}
++
++model LocationShareToken {
++  id              String    @id @default(uuid())
++  userId          String
++  tokenHash       String    @unique
++  label           String?
++  expiresAt       DateTime
++  revokedAt       DateTime?
++  lastUsedAt      DateTime?
++  createdByUserId String?
++  createdAt       DateTime  @default(now())
++  updatedAt       DateTime  @updatedAt
++
++  user      User                   @relation("LocationShareTokenForUser", fields: [userId], references: [id], onDelete: Cascade)
++  createdBy User?                  @relation("LocationShareTokenCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
++  sessions  LocationSharingSession[]
++  points    LocationPoint[]
++
++  @@index([userId, expiresAt])
++  @@index([expiresAt])
++  @@index([revokedAt])
++}
++
++model LocationPoint {
++  id                String               @id @default(uuid())
++  userId            String
++  sessionId         String?
++  tokenId           String?
++  latitude          Float
++  longitude         Float
++  accuracyM         Float
++  recordedAt        DateTime
++  receivedAt        DateTime             @default(now())
++  source            LocationUpdateSource
++  batteryLevel      Int?
++  isSharingSnapshot Boolean              @default(true)
++  createdAt         DateTime             @default(now())
++
++  user               User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
++  session            LocationSharingSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
++  token              LocationShareToken?     @relation(fields: [tokenId], references: [id], onDelete: SetNull)
++  liveLocationStates LiveLocationState[]     @relation("LastLiveLocationPoint")
++
++  @@index([userId, receivedAt])
++  @@index([userId, recordedAt])
++  @@index([receivedAt])
++  @@index([sessionId, receivedAt])
+ }
+ 
+ model Zone {
+@@ -228,19 +429,112 @@ model RentalAgreement {
+ model Incident {
+   id              String           @id @default(uuid())
+   incidentCode    String           @unique
++  title           String?
+   householdId     String?
+   type            IncidentType
+   priority        IncidentPriority
++  severity        EmergencySeverity @default(MEDIUM)
+   description     String
+   assignedUserId  String?
++  emergencyPlanId String?
++  locationLabel   String?
++  locationLat     Float?
++  locationLng     Float?
++  locationAccuracyM Float?
+   status          IncidentStatus
+   dueDate         DateTime?
++  activatedAt     DateTime?
++  resolvedAt      DateTime?
++  closedAt        DateTime?
+   resolutionNotes String?
+   createdAt       DateTime         @default(now())
+   updatedAt       DateTime         @updatedAt
+ 
+-  household    Household? @relation(fields: [householdId], references: [id], onDelete: SetNull)
+-  assignedUser User?      @relation("IncidentAssignedUser", fields: [assignedUserId], references: [id], onDelete: SetNull)
++  household      Household? @relation(fields: [householdId], references: [id], onDelete: SetNull)
++  assignedUser   User?      @relation("IncidentAssignedUser", fields: [assignedUserId], references: [id], onDelete: SetNull)
++  emergencyPlan  EmergencyPlan? @relation("IncidentEmergencyPlan", fields: [emergencyPlanId], references: [id], onDelete: SetNull)
++  vehicle        IncidentVehicle?
++  dispatches     IncidentDispatch[]
++  timeline       IncidentTimeline[]
++  notifications  Notification[]
++
++  @@index([status, priority, createdAt])
++  @@index([emergencyPlanId])
++}
++
++model IncidentVehicle {
++  id                  String   @id @default(uuid())
++  incidentId          String   @unique
++  vehicleType         String?
++  brand               String?
++  model               String?
++  color               String?
++  plateNumber         String?
++  registrationCountry String?
++  directionOfTravel   String?
++  passengerCount      Int?
++  notes               String?
++  photoUrl            String?
++  createdAt           DateTime @default(now())
++  updatedAt           DateTime @updatedAt
++
++  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
++}
++
++model ResponseUnit {
++  id                String     @id @default(uuid())
++  name              String
++  type              UnitType
++  status            UnitStatus @default(AVAILABLE)
++  latitude          Float?
++  longitude         Float?
++  assignedOfficerId String?
++  createdAt         DateTime   @default(now())
++  updatedAt         DateTime   @updatedAt
++
++  assignedOfficer User? @relation("ResponseUnitAssignedOfficer", fields: [assignedOfficerId], references: [id], onDelete: SetNull)
++  dispatches      IncidentDispatch[]
++
++  @@index([type, status])
++}
++
++model IncidentDispatch {
++  id             String         @id @default(uuid())
++  incidentId     String
++  unitId         String
++  officerId      String?
++  status         DispatchStatus @default(NOTIFIED)
++  notifiedAt     DateTime?
++  acknowledgedAt DateTime?
++  enRouteAt      DateTime?
++  arrivedAt      DateTime?
++  completedAt    DateTime?
++  notes          String?
++  createdAt      DateTime       @default(now())
++  updatedAt      DateTime       @updatedAt
++
++  incident      Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
++  unit          ResponseUnit @relation(fields: [unitId], references: [id], onDelete: Restrict)
++  officer       User? @relation("IncidentDispatchOfficer", fields: [officerId], references: [id], onDelete: SetNull)
++  notifications Notification[]
++
++  @@index([incidentId, status])
++  @@index([officerId, status])
++}
++
++model IncidentTimeline {
++  id          String                    @id @default(uuid())
++  incidentId  String
++  eventType   IncidentTimelineEventType
++  message     String
++  metadata    Json?
++  createdById String?
++  createdAt   DateTime                  @default(now())
++
++  incident  Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
++  createdBy User?    @relation("IncidentTimelineCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
++
++  @@index([incidentId, createdAt])
+ }
+ 
+ model AuditLog {
+@@ -257,7 +551,11 @@ model AuditLog {
+ model EmergencyPlan {
+   id              String                 @id @default(uuid())
+   name            String
++  type            EmergencyPlanType      @default(CUSTOM)
++  severity        EmergencySeverity      @default(MEDIUM)
+   description     String?
++  defaultNotificationTitle   String?
++  defaultNotificationMessage String?
+   isActive        Boolean                @default(false)
+   createdByUserId String
+   createdAt       DateTime               @default(now())
+@@ -266,6 +564,28 @@ model EmergencyPlan {
+   createdBy    User                    @relation("EmergencyPlanCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+   roadClosures EmergencyRoadClosure[]
+   policePosts  EmergencyPolicePost[]
++  steps        EmergencyPlanStep[]
++  incidents    Incident[] @relation("IncidentEmergencyPlan")
++
++  @@index([type, severity, isActive])
++}
++
++model EmergencyPlanStep {
++  id               String            @id @default(uuid())
++  planId           String
++  stepOrder        Int
++  title            String
++  description      String?
++  icon             String?
++  unitTypeRequired UnitType         @default(POLICE)
++  isRequired       Boolean          @default(true)
++  createdAt        DateTime         @default(now())
++  updatedAt        DateTime         @updatedAt
++
++  plan EmergencyPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
++
++  @@unique([planId, stepOrder])
++  @@index([planId, isRequired, unitTypeRequired])
+ }
+ 
+ model EmergencyRoadClosure {
+@@ -303,6 +623,15 @@ model Notification {
+   title           String
+   message         String
+   isRead          Boolean   @default(false)
++  incidentId      String?
++  dispatchId      String?
++  incidentType    IncidentType?
++  incidentPriority IncidentPriority?
++  incidentSeverity EmergencySeverity?
++  locationLabel   String?
++  vehicleSummary  String?
++  actionRequired  String?
++  metadata        Json?
+   emergencyPlanId String?
+   policePostLabel String?
+   targetLat       Float?
+@@ -310,9 +639,12 @@ model Notification {
+   readAt          DateTime?
+   createdAt       DateTime  @default(now())
+ 
+-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
++  user     User             @relation(fields: [userId], references: [id], onDelete: Cascade)
++  incident Incident?        @relation(fields: [incidentId], references: [id], onDelete: SetNull)
++  dispatch IncidentDispatch? @relation(fields: [dispatchId], references: [id], onDelete: SetNull)
+ 
+   @@index([userId, isRead, createdAt])
++  @@index([incidentId, createdAt])
+ }
+ 
+ model MapReference {
+diff --git a/backend/src/app.ts b/backend/src/app.ts
+index 70f0077..69b7490 100644
+--- a/backend/src/app.ts
++++ b/backend/src/app.ts
+@@ -10,14 +10,17 @@ import { errorHandler, notFound } from "./middleware/error";
+ import { authRouter } from "./routes/auth";
+ import { carsRouter } from "./routes/cars";
+ import { dashboardRouter } from "./routes/dashboard";
++import { dispatchesRouter } from "./routes/dispatches";
+ import { emergencyPlansRouter } from "./routes/emergencyPlans";
+ import { exportsRouter } from "./routes/exports";
+ import { householdsRouter } from "./routes/households";
+ import { housingUnitsRouter } from "./routes/housingUnits";
+ import { incidentsRouter } from "./routes/incidents";
+ import { landlordsRouter } from "./routes/landlords";
++import { locationRouter, locationsRouter } from "./routes/locations";
+ import { mapReferencesRouter } from "./routes/mapReferences";
+ import { notificationsRouter } from "./routes/notifications";
++import { responseUnitsRouter } from "./routes/responseUnits";
+ import { rentalAgreementsRouter } from "./routes/rentalAgreements";
+ import { usersRouter } from "./routes/users";
+ import { zonesRouter } from "./routes/zones";
+@@ -52,7 +55,7 @@ app.use(
+       return callback(null, false);
+     },
+     credentials: true,
+-    allowedHeaders: ["Content-Type", "Authorization"],
++    allowedHeaders: ["Content-Type", "Authorization", "X-Location-Token"],
+     methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"]
+   })
+ );
+@@ -70,6 +73,7 @@ app.get("/health", (_req, res) => {
+ });
+ 
+ app.use("/auth", authRouter);
++app.use("/location", locationRouter);
+ 
+ app.get(
+   "/me",
+@@ -77,18 +81,43 @@ app.get(
+   asyncHandler(async (req, res) => {
+     const user = await prisma.user.findUnique({
+       where: { id: req.user!.id },
+-      select: { id: true, email: true, fullName: true, role: true, isActive: true }
++      select: {
++        id: true,
++        email: true,
++        fullName: true,
++        role: true,
++        isActive: true,
++        liveLocationEnabled: true,
++        liveLocationVisible: true,
++        trustedDevice: {
++          select: {
++            isActive: true,
++            lastSeenAt: true
++          }
++        }
++      }
+     });
+ 
+     if (!user || !user.isActive) {
+       return res.status(401).json({ message: "Unauthorized" });
+     }
+ 
+-    return res.json(user);
++    return res.json({
++      id: user.id,
++      email: user.email,
++      fullName: user.fullName,
++      role: user.role,
++      isActive: user.isActive,
++      liveLocationEnabled: user.liveLocationEnabled,
++      liveLocationVisible: user.liveLocationVisible,
++      trustedDeviceAssigned: Boolean(user.trustedDevice?.isActive),
++      trustedDeviceLastSeenAt: user.trustedDevice?.lastSeenAt ?? null
++    });
+   })
+ );
+ 
+ app.use(requireAuth);
++app.use("/live-tracking", locationRouter);
+ app.use("/users", usersRouter);
+ app.use("/zones", zonesRouter);
+ app.use("/households", householdsRouter);
+@@ -102,6 +131,9 @@ app.use("/notifications", notificationsRouter);
+ app.use("/map-references", mapReferencesRouter);
+ app.use("/dashboard", dashboardRouter);
+ app.use("/exports", exportsRouter);
++app.use("/response-units", responseUnitsRouter);
++app.use("/dispatches", dispatchesRouter);
++app.use("/locations", locationsRouter);
+ 
+ app.use(notFound);
+ app.use(errorHandler);
+diff --git a/backend/src/middleware/auth.ts b/backend/src/middleware/auth.ts
+index c4f2218..937b70f 100644
+--- a/backend/src/middleware/auth.ts
++++ b/backend/src/middleware/auth.ts
+@@ -1,5 +1,6 @@
+ import { NextFunction, Request, Response } from "express";
+ import jwt from "jsonwebtoken";
++import { Role } from "@prisma/client";
+ import { env } from "../config/env";
+ import { prisma } from "../lib/prisma";
+ 
+@@ -7,39 +8,80 @@ interface JwtPayload {
+   sub: string;
+   email?: string;
+   role?: string;
++  tdid?: string;
+ }
+ 
+-export async function requireAuth(req: Request, res: Response, next: NextFunction) {
+-  const header = req.headers.authorization;
+-  if (!header || !header.startsWith("Bearer ")) {
+-    return res.status(401).json({ message: "Unauthorized" });
++export function userRequiresTrustedDeviceProtection(role: Role, liveLocationEnabled: boolean) {
++  // Browser fingerprints are not hardware identity proof; this is operational trust control.
++  return liveLocationEnabled || role !== Role.VIEWER;
++}
++
++export function extractBearerToken(authorizationHeader: string | string[] | undefined) {
++  if (typeof authorizationHeader !== "string" || !authorizationHeader.startsWith("Bearer ")) {
++    return null;
+   }
+ 
+-  const token = header.slice(7);
++  const token = authorizationHeader.slice(7).trim();
++  return token.length ? token : null;
++}
+ 
++export async function authenticateBearerToken(token: string) {
+   try {
+     const payload = jwt.verify(token, env.JWT_SECRET) as JwtPayload;
+     if (!payload.sub) {
+-      return res.status(401).json({ message: "Invalid token" });
++      return null;
+     }
+ 
+     const user = await prisma.user.findUnique({
+       where: { id: payload.sub },
+-      select: { id: true, email: true, role: true, isActive: true }
++      select: {
++        id: true,
++        email: true,
++        role: true,
++        isActive: true,
++        liveLocationEnabled: true,
++        trustedDevice: {
++          select: {
++            id: true,
++            isActive: true
++          }
++        }
++      }
+     });
+ 
+     if (!user || !user.isActive) {
+-      return res.status(401).json({ message: "Unauthorized" });
++      return null;
++    }
++
++    if (userRequiresTrustedDeviceProtection(user.role, user.liveLocationEnabled)) {
++      if (!payload.tdid || !user.trustedDevice || !user.trustedDevice.isActive || user.trustedDevice.id !== payload.tdid) {
++        return null;
++      }
+     }
+ 
+-    req.user = {
++    return {
+       id: user.id,
+       email: user.email,
+-      role: user.role
++      role: user.role,
++      trustedDeviceId: user.trustedDevice?.id ?? null
+     };
+-    return next();
+   } catch {
++    return null;
++  }
++}
++
++export async function requireAuth(req: Request, res: Response, next: NextFunction) {
++  const token = extractBearerToken(req.headers.authorization);
++  if (!token) {
+     return res.status(401).json({ message: "Unauthorized" });
+   }
++
++  const user = await authenticateBearerToken(token);
++  if (!user) {
++    return res.status(401).json({ message: "Unauthorized" });
++  }
++
++  req.user = user;
++  return next();
+ }
+ 
+diff --git a/backend/src/routes/auth.ts b/backend/src/routes/auth.ts
+index 0ae5bfe..86ce1ed 100644
+--- a/backend/src/routes/auth.ts
++++ b/backend/src/routes/auth.ts
+@@ -1,20 +1,178 @@
++import crypto from "crypto";
+ import bcrypt from "bcrypt";
++import { Role } from "@prisma/client";
+ import { Router } from "express";
+ import jwt from "jsonwebtoken";
+ import { z } from "zod";
+ import { env } from "../config/env";
+ import { prisma } from "../lib/prisma";
+-import { requireAuth } from "../middleware/auth";
++import { requireAuth, userRequiresTrustedDeviceProtection } from "../middleware/auth";
++import { writeAudit } from "../services/audit";
+ import { validateBody } from "../middleware/validate";
+ import { asyncHandler } from "../utils/asyncHandler";
+ 
++const loginDeviceSchema = z
++  .object({
++    id: z.string().trim().min(16).max(200),
++    label: z.string().trim().max(180).optional().nullable(),
++    platform: z.string().trim().max(120).optional().nullable(),
++    language: z.string().trim().max(40).optional().nullable(),
++    timezone: z.string().trim().max(120).optional().nullable(),
++    screen: z.string().trim().max(80).optional().nullable()
++  })
++  .strict();
++
+ const loginSchema = z.object({
+-  email: z.string().email(),
+-  password: z.string().min(8)
++  email: z.string().trim().toLowerCase().email(),
++  password: z.string().min(8),
++  device: loginDeviceSchema.optional()
+ });
+ 
++type LoginDevicePayload = z.infer<typeof loginDeviceSchema>;
++
++type TrustedDeviceResolution =
++  | { ok: true; trustedDeviceId: string | null }
++  | { ok: false; status: number; message: string };
++
+ export const authRouter = Router();
+ 
++function hashValue(raw: string) {
++  return crypto.createHash("sha256").update(raw).digest("hex");
++}
++
++function normalizeOptionalText(value: unknown) {
++  const text = typeof value === "string" ? value.trim() : "";
++  return text.length ? text : null;
++}
++
++function normalizeUserAgent(headerValue: unknown) {
++  const userAgent = typeof headerValue === "string" ? headerValue.trim() : "";
++  return userAgent.slice(0, 512) || null;
++}
++
++function buildFingerprintHash(device: LoginDevicePayload, userAgent: string | null) {
++  const source = [
++    device.id.trim(),
++    normalizeOptionalText(device.platform) ?? "",
++    normalizeOptionalText(device.language) ?? "",
++    normalizeOptionalText(device.timezone) ?? "",
++    normalizeOptionalText(device.screen) ?? "",
++    userAgent ?? ""
++  ].join("|");
++  return hashValue(source);
++}
++
++async function resolveTrustedDeviceForLogin(params: {
++  user: {
++    id: string;
++    role: Role;
++    liveLocationEnabled: boolean;
++  };
++  device: LoginDevicePayload | undefined;
++  userAgent: string | null;
++}): Promise<TrustedDeviceResolution> {
++  const { user, device, userAgent } = params;
++  const requiresTrustedDevice = userRequiresTrustedDeviceProtection(user.role, user.liveLocationEnabled);
++
++  if (!requiresTrustedDevice) {
++    return { ok: true, trustedDeviceId: null };
++  }
++
++  if (!device) {
++    return {
++      ok: false,
++      status: 400,
++      message: "Trusted device verification is required. Please sign in from your registered device."
++    };
++  }
++
++  const now = new Date();
++  const persistentIdHash = hashValue(device.id.trim());
++  const fingerprintHash = buildFingerprintHash(device, userAgent);
++  const deviceLabel = normalizeOptionalText(device.label);
++  const platform = normalizeOptionalText(device.platform);
++  const browserLanguage = normalizeOptionalText(device.language);
++  const timezone = normalizeOptionalText(device.timezone);
++  const screen = normalizeOptionalText(device.screen);
++
++  const existing = await prisma.userTrustedDevice.findUnique({
++    where: { userId: user.id },
++    select: {
++      id: true,
++      persistentIdHash: true,
++      isActive: true
++    }
++  });
++
++  if (!existing || !existing.isActive) {
++    const trustedDevice = await prisma.userTrustedDevice.upsert({
++      where: { userId: user.id },
++      create: {
++        userId: user.id,
++        persistentIdHash,
++        fingerprintHash,
++        deviceLabel,
++        userAgent,
++        platform,
++        browserLanguage,
++        timezone,
++        screen,
++        firstTrustedAt: now,
++        lastSeenAt: now,
++        isActive: true,
++        resetAt: null,
++        resetByUserId: null
++      },
++      update: {
++        persistentIdHash,
++        fingerprintHash,
++        deviceLabel,
++        userAgent,
++        platform,
++        browserLanguage,
++        timezone,
++        screen,
++        firstTrustedAt: now,
++        lastSeenAt: now,
++        isActive: true,
++        resetAt: null,
++        resetByUserId: null
++      }
++    });
++
++    await writeAudit(user.id, "TRUSTED_DEVICE_ASSIGNED", "UserTrustedDevice", trustedDevice.id);
++    return { ok: true, trustedDeviceId: trustedDevice.id };
++  }
++
++  if (existing.persistentIdHash !== persistentIdHash) {
++    return {
++      ok: false,
++      status: 403,
++      message: "This account is restricted to a trusted device. Please contact administrator."
++    };
++  }
++
++  const trustedDevice = await prisma.userTrustedDevice.update({
++    where: { id: existing.id },
++    data: {
++      fingerprintHash,
++      deviceLabel,
++      userAgent,
++      platform,
++      browserLanguage,
++      timezone,
++      screen,
++      lastSeenAt: now,
++      isActive: true
++    },
++    select: {
++      id: true
++    }
++  });
++
++  return { ok: true, trustedDeviceId: trustedDevice.id };
++}
++
+ authRouter.post(
+   "/login",
+   validateBody(loginSchema),
+@@ -30,11 +188,26 @@ authRouter.post(
+       return res.status(401).json({ message: "Invalid credentials" });
+     }
+ 
++    const trustedDeviceResult = await resolveTrustedDeviceForLogin({
++      user: {
++        id: user.id,
++        role: user.role,
++        liveLocationEnabled: user.liveLocationEnabled
++      },
++      device: req.body.device,
++      userAgent: normalizeUserAgent(req.headers["user-agent"])
++    });
++
++    if (trustedDeviceResult.ok === false) {
++      return res.status(trustedDeviceResult.status).json({ message: trustedDeviceResult.message });
++    }
++
+     const token = jwt.sign(
+       {
+         sub: user.id,
+         email: user.email,
+-        role: user.role
++        role: user.role,
++        tdid: trustedDeviceResult.trustedDeviceId ?? undefined
+       },
+       env.JWT_SECRET,
+       { expiresIn: env.JWT_EXPIRES_IN as jwt.SignOptions["expiresIn"] }
+@@ -46,7 +219,10 @@ authRouter.post(
+         id: user.id,
+         email: user.email,
+         fullName: user.fullName,
+-        role: user.role
++        role: user.role,
++        liveLocationEnabled: user.liveLocationEnabled,
++        liveLocationVisible: user.liveLocationVisible,
++        trustedDeviceAssigned: Boolean(trustedDeviceResult.trustedDeviceId)
+       }
+     });
+   })
+@@ -58,14 +234,37 @@ authRouter.get(
+   asyncHandler(async (req, res) => {
+     const user = await prisma.user.findUnique({
+       where: { id: req.user!.id },
+-      select: { id: true, email: true, fullName: true, role: true, isActive: true }
++      select: {
++        id: true,
++        email: true,
++        fullName: true,
++        role: true,
++        isActive: true,
++        liveLocationEnabled: true,
++        liveLocationVisible: true,
++        trustedDevice: {
++          select: {
++            isActive: true,
++            lastSeenAt: true
++          }
++        }
++      }
+     });
+ 
+     if (!user || !user.isActive) {
+       return res.status(401).json({ message: "Unauthorized" });
+     }
+ 
+-    return res.json(user);
++    return res.json({
++      id: user.id,
++      email: user.email,
++      fullName: user.fullName,
++      role: user.role,
++      isActive: user.isActive,
++      liveLocationEnabled: user.liveLocationEnabled,
++      liveLocationVisible: user.liveLocationVisible,
++      trustedDeviceAssigned: Boolean(user.trustedDevice?.isActive),
++      trustedDeviceLastSeenAt: user.trustedDevice?.lastSeenAt ?? null
++    });
+   })
+ );
+-
+diff --git a/backend/src/routes/incidents.ts b/backend/src/routes/incidents.ts
+index de34e34..3117057 100644
+--- a/backend/src/routes/incidents.ts
++++ b/backend/src/routes/incidents.ts
+@@ -1,25 +1,95 @@
+-import { IncidentPriority, IncidentStatus, IncidentType, Role } from "@prisma/client";
++import {
++  EmergencySeverity,
++  IncidentPriority,
++  IncidentStatus,
++  IncidentTimelineEventType,
++  IncidentType,
++  Prisma,
++  Role
++} from "@prisma/client";
+ import { Router } from "express";
+ import { z } from "zod";
+ import { prisma } from "../lib/prisma";
+ import { requireRoles } from "../middleware/rbac";
+ import { validateBody } from "../middleware/validate";
+ import { writeAudit } from "../services/audit";
++import { activatePlanForIncident } from "../services/incidentResponse";
++import { addIncidentTimelineEvent } from "../services/incidentTimeline";
+ import { asyncHandler } from "../utils/asyncHandler";
+ import { createWithCodeRetry } from "../utils/code";
+ 
+-const incidentSchema = z.object({
++const vehicleSchema = z
++  .object({
++    vehicleType: z.string().trim().max(60).optional().nullable(),
++    brand: z.string().trim().max(60).optional().nullable(),
++    model: z.string().trim().max(60).optional().nullable(),
++    color: z.string().trim().max(40).optional().nullable(),
++    plateNumber: z.string().trim().max(40).optional().nullable(),
++    registrationCountry: z.string().trim().max(60).optional().nullable(),
++    directionOfTravel: z.string().trim().max(120).optional().nullable(),
++    passengerCount: z.coerce.number().int().min(0).max(200).optional().nullable(),
++    notes: z.string().trim().max(1200).optional().nullable(),
++    photoUrl: z.string().trim().max(500).optional().nullable()
++  })
++  .strict();
++
++const incidentSchemaBase = z.object({
+   householdId: z.string().uuid().optional().nullable(),
++  title: z.string().trim().max(180).optional().nullable(),
+   type: z.nativeEnum(IncidentType),
+   priority: z.nativeEnum(IncidentPriority),
+-  description: z.string().min(3),
++  severity: z.nativeEnum(EmergencySeverity).default(EmergencySeverity.MEDIUM),
++  description: z.string().trim().min(3).max(3000),
+   assignedUserId: z.string().uuid().optional().nullable(),
+-  status: z.nativeEnum(IncidentStatus),
++  emergencyPlanId: z.string().uuid().optional().nullable(),
++  locationLabel: z.string().trim().max(180).optional().nullable(),
++  locationLat: z.number().min(-90).max(90).optional().nullable(),
++  locationLng: z.number().min(-180).max(180).optional().nullable(),
++  locationAccuracyM: z.number().min(0).max(5000).optional().nullable(),
++  status: z.nativeEnum(IncidentStatus).default(IncidentStatus.REPORTED),
+   dueDate: z.string().optional().nullable(),
+-  resolutionNotes: z.string().optional().nullable()
++  resolutionNotes: z.string().trim().max(3000).optional().nullable(),
++  vehicle: vehicleSchema.optional().nullable()
+ });
+ 
+-const incidentPatchSchema = incidentSchema.partial();
++const incidentSchema = incidentSchemaBase
++  .superRefine((data, ctx) => {
++    if ((data.locationLat == null) !== (data.locationLng == null)) {
++      ctx.addIssue({
++        code: z.ZodIssueCode.custom,
++        message: "locationLat and locationLng must both be provided together"
++      });
++    }
++    if (data.locationAccuracyM != null && (data.locationLat == null || data.locationLng == null)) {
++      ctx.addIssue({
++        code: z.ZodIssueCode.custom,
++        message: "locationAccuracyM can only be provided together with locationLat and locationLng"
++      });
++    }
++  });
++
++const incidentPatchSchema = incidentSchemaBase
++  .partial()
++  .superRefine((data, ctx) => {
++    if ((data.locationLat == null) !== (data.locationLng == null)) {
++      ctx.addIssue({
++        code: z.ZodIssueCode.custom,
++        message: "locationLat and locationLng must both be provided together"
++      });
++    }
++    if (data.locationAccuracyM != null && (data.locationLat == null || data.locationLng == null)) {
++      ctx.addIssue({
++        code: z.ZodIssueCode.custom,
++        message: "locationAccuracyM can only be provided together with locationLat and locationLng"
++      });
++    }
++  });
++
++const activatePlanSchema = z.object({
++  emergencyPlanId: z.string().uuid(),
++  selectedUnitIds: z.array(z.string().uuid()).optional(),
++  customMessage: z.string().trim().max(2000).optional().nullable()
++});
+ 
+ export const incidentsRouter = Router();
+ 
+@@ -28,10 +98,19 @@ incidentsRouter.get(
+   asyncHandler(async (_req, res) => {
+     const incidents = await prisma.incident.findMany({
+       include: {
+-        household: { select: { id: true, householdCode: true } },
+-        assignedUser: { select: { id: true, fullName: true, email: true, role: true } }
++        household: { select: { id: true, householdCode: true, headName: true } },
++        assignedUser: { select: { id: true, fullName: true, email: true, role: true } },
++        emergencyPlan: { select: { id: true, name: true, type: true, severity: true } },
++        vehicle: true,
++        dispatches: {
++          include: {
++            unit: true,
++            officer: { select: { id: true, fullName: true, email: true, role: true } }
++          },
++          orderBy: { createdAt: "asc" }
++        }
+       },
+-      orderBy: [{ priority: "desc" }, { createdAt: "desc" }]
++      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }]
+     });
+     return res.json(incidents);
+   })
+@@ -42,33 +121,154 @@ incidentsRouter.post(
+   requireRoles(Role.ADMIN, Role.CASE_WORKER),
+   validateBody(incidentSchema),
+   asyncHandler(async (req, res) => {
+-    const incident = await createWithCodeRetry({
+-      model: "incident",
+-      create: async (incidentCode) =>
+-        prisma.incident.create({
+-          data: {
+-            incidentCode,
+-            householdId: req.body.householdId ?? null,
+-            type: req.body.type,
+-            priority: req.body.priority,
+-            description: req.body.description,
+-            assignedUserId: req.body.assignedUserId ?? null,
+-            status: req.body.status,
+-            dueDate: req.body.dueDate ? new Date(req.body.dueDate) : null,
+-            resolutionNotes: req.body.resolutionNotes ?? null
++    const payload = req.body as z.infer<typeof incidentSchema>;
++
++    const created = await prisma.$transaction(async (tx) =>
++      createWithCodeRetry({
++        model: "incident",
++        create: async (incidentCode) => {
++          const incident = await tx.incident.create({
++            data: {
++              incidentCode,
++              householdId: payload.householdId ?? null,
++              title: payload.title ?? null,
++              type: payload.type,
++              priority: payload.priority,
++              severity: payload.severity,
++              description: payload.description,
++              assignedUserId: payload.assignedUserId ?? null,
++              emergencyPlanId: payload.emergencyPlanId ?? null,
++              locationLabel: payload.locationLabel ?? null,
++              locationLat: payload.locationLat ?? null,
++              locationLng: payload.locationLng ?? null,
++              locationAccuracyM: payload.locationAccuracyM ?? null,
++              status: payload.status,
++              dueDate: payload.dueDate ? new Date(payload.dueDate) : null,
++              resolutionNotes: payload.resolutionNotes ?? null
++            },
++            include: {
++              vehicle: true
++            }
++          });
++
++          if (payload.vehicle) {
++            await tx.incidentVehicle.create({
++              data: {
++                incidentId: incident.id,
++                ...payload.vehicle
++              }
++            });
+           }
+-        })
+-    });
+ 
+-    await writeAudit(req.user!.id, "CREATE", "Incident", incident.id);
+-    return res.status(201).json(incident);
++          await addIncidentTimelineEvent(tx, {
++            incidentId: incident.id,
++            eventType: IncidentTimelineEventType.INCIDENT_CREATED,
++            message: "Incident created.",
++            metadata: {
++              type: incident.type,
++              priority: incident.priority,
++              status: incident.status
++            },
++            createdById: req.user!.id
++          });
++
++          if (payload.vehicle) {
++            await addIncidentTimelineEvent(tx, {
++              incidentId: incident.id,
++              eventType: IncidentTimelineEventType.VEHICLE_UPDATED,
++              message: "Vehicle details added.",
++              createdById: req.user!.id
++            });
++          }
++
++          return tx.incident.findUniqueOrThrow({
++            where: { id: incident.id },
++            include: {
++              household: { select: { id: true, householdCode: true, headName: true } },
++              assignedUser: { select: { id: true, fullName: true, email: true, role: true } },
++              emergencyPlan: { select: { id: true, name: true, type: true, severity: true } },
++              vehicle: true,
++              dispatches: {
++                include: {
++                  unit: true,
++                  officer: { select: { id: true, fullName: true, email: true, role: true } }
++                },
++                orderBy: { createdAt: "asc" }
++              },
++              timeline: {
++                include: { createdBy: { select: { id: true, fullName: true, role: true } } },
++                orderBy: { createdAt: "desc" }
++              }
++            }
++          });
++        }
++      })
++    );
++
++    await writeAudit(req.user!.id, "CREATE", "Incident", created.id);
++    return res.status(201).json(created);
++  })
++);
++
++incidentsRouter.post(
++  "/:id/activate-plan",
++  requireRoles(Role.ADMIN, Role.CASE_WORKER),
++  validateBody(activatePlanSchema),
++  asyncHandler(async (req, res) => {
++    const payload = req.body as z.infer<typeof activatePlanSchema>;
++    let result;
++    try {
++      result = await activatePlanForIncident({
++        incidentId: req.params.id,
++        emergencyPlanId: payload.emergencyPlanId,
++        selectedUnitIds: payload.selectedUnitIds,
++        customMessage: payload.customMessage,
++        actorId: req.user!.id
++      });
++    } catch (error) {
++      const message = error instanceof Error ? error.message : "Could not activate plan";
++      if (message === "Incident not found" || message === "Emergency plan not found") {
++        return res.status(404).json({ message });
++      }
++      throw error;
++    }
++
++    await writeAudit(req.user!.id, "ACTIVATE_PLAN", "Incident", req.params.id);
++    return res.json(result);
+   })
+ );
+ 
+ incidentsRouter.get(
+   "/:id",
+   asyncHandler(async (req, res) => {
+-    const incident = await prisma.incident.findUnique({ where: { id: req.params.id } });
++    const incident = await prisma.incident.findUnique({
++      where: { id: req.params.id },
++      include: {
++        household: { select: { id: true, householdCode: true, headName: true } },
++        assignedUser: { select: { id: true, fullName: true, email: true, role: true } },
++        emergencyPlan: {
++          include: {
++            steps: { orderBy: { stepOrder: "asc" } }
++          }
++        },
++        vehicle: true,
++        dispatches: {
++          include: {
++            unit: true,
++            officer: { select: { id: true, fullName: true, email: true, role: true } }
++          },
++          orderBy: { createdAt: "asc" }
++        },
++        timeline: {
++          include: { createdBy: { select: { id: true, fullName: true, role: true } } },
++          orderBy: { createdAt: "desc" }
++        },
++        notifications: {
++          orderBy: { createdAt: "desc" },
++          take: 50
++        }
++      }
++    });
+     if (!incident) {
+       return res.status(404).json({ message: "Incident not found" });
+     }
+@@ -81,14 +281,129 @@ incidentsRouter.patch(
+   requireRoles(Role.ADMIN, Role.CASE_WORKER),
+   validateBody(incidentPatchSchema),
+   asyncHandler(async (req, res) => {
+-    const data: Record<string, unknown> = {
+-      ...req.body,
+-      dueDate: req.body.dueDate === undefined ? undefined : req.body.dueDate ? new Date(req.body.dueDate) : null
+-    };
++    const payload = req.body as z.infer<typeof incidentPatchSchema>;
+ 
+-    const incident = await prisma.incident.update({ where: { id: req.params.id }, data });
+-    await writeAudit(req.user!.id, "UPDATE", "Incident", incident.id);
+-    return res.json(incident);
++    const updated = await prisma.$transaction(async (tx) => {
++      const existing = await tx.incident.findUnique({
++        where: { id: req.params.id },
++        include: { vehicle: true }
++      });
++      if (!existing) {
++        return null;
++      }
++
++      const status = payload.status ?? existing.status;
++      const data: Prisma.IncidentUncheckedUpdateInput = {
++        householdId: payload.householdId === undefined ? undefined : payload.householdId,
++        title: payload.title === undefined ? undefined : payload.title,
++        type: payload.type,
++        priority: payload.priority,
++        severity: payload.severity,
++        description: payload.description,
++        assignedUserId: payload.assignedUserId === undefined ? undefined : payload.assignedUserId,
++        emergencyPlanId: payload.emergencyPlanId === undefined ? undefined : payload.emergencyPlanId,
++        locationLabel: payload.locationLabel === undefined ? undefined : payload.locationLabel,
++        locationLat: payload.locationLat === undefined ? undefined : payload.locationLat,
++        locationLng: payload.locationLng === undefined ? undefined : payload.locationLng,
++        locationAccuracyM:
++          payload.locationAccuracyM === undefined ? undefined : payload.locationAccuracyM,
++        status,
++        dueDate: payload.dueDate === undefined ? undefined : payload.dueDate ? new Date(payload.dueDate) : null,
++        resolutionNotes:
++          payload.resolutionNotes === undefined ? undefined : payload.resolutionNotes
++      };
++
++      if (payload.status === IncidentStatus.ACTIVE_RESPONSE && !existing.activatedAt) {
++        data.activatedAt = new Date();
++      }
++      if (payload.status === IncidentStatus.RESOLVED) {
++        data.resolvedAt = new Date();
++      }
++      if (payload.status === IncidentStatus.CLOSED) {
++        data.closedAt = new Date();
++      }
++
++      const incident = await tx.incident.update({
++        where: { id: req.params.id },
++        data
++      });
++
++      if (payload.vehicle !== undefined) {
++        if (payload.vehicle === null) {
++          await tx.incidentVehicle.deleteMany({
++            where: { incidentId: incident.id }
++          });
++          await addIncidentTimelineEvent(tx, {
++            incidentId: incident.id,
++            eventType: IncidentTimelineEventType.VEHICLE_UPDATED,
++            message: "Vehicle details removed.",
++            createdById: req.user!.id
++          });
++        } else {
++          await tx.incidentVehicle.upsert({
++            where: { incidentId: incident.id },
++            update: payload.vehicle,
++            create: {
++              incidentId: incident.id,
++              ...payload.vehicle
++            }
++          });
++          await addIncidentTimelineEvent(tx, {
++            incidentId: incident.id,
++            eventType: IncidentTimelineEventType.VEHICLE_UPDATED,
++            message: existing.vehicle ? "Vehicle details updated." : "Vehicle details added.",
++            createdById: req.user!.id
++          });
++        }
++      }
++
++      if (payload.status && payload.status !== existing.status) {
++        const eventType =
++          payload.status === IncidentStatus.CLOSED
++            ? IncidentTimelineEventType.INCIDENT_CLOSED
++            : payload.status === IncidentStatus.RESOLVED
++              ? IncidentTimelineEventType.INCIDENT_RESOLVED
++              : IncidentTimelineEventType.DISPATCH_STATUS_CHANGED;
++        await addIncidentTimelineEvent(tx, {
++          incidentId: incident.id,
++          eventType,
++          message: `Incident status changed from ${existing.status} to ${payload.status}.`,
++          createdById: req.user!.id
++        });
++      }
++
++      return tx.incident.findUniqueOrThrow({
++        where: { id: incident.id },
++        include: {
++          household: { select: { id: true, householdCode: true, headName: true } },
++          assignedUser: { select: { id: true, fullName: true, email: true, role: true } },
++          emergencyPlan: {
++            include: {
++              steps: { orderBy: { stepOrder: "asc" } }
++            }
++          },
++          vehicle: true,
++          dispatches: {
++            include: {
++              unit: true,
++              officer: { select: { id: true, fullName: true, email: true, role: true } }
++            },
++            orderBy: { createdAt: "asc" }
++          },
++          timeline: {
++            include: { createdBy: { select: { id: true, fullName: true, role: true } } },
++            orderBy: { createdAt: "desc" }
++          }
++        }
++      });
++    });
++
++    if (!updated) {
++      return res.status(404).json({ message: "Incident not found" });
++    }
++
++    await writeAudit(req.user!.id, "UPDATE", "Incident", updated.id);
++    return res.json(updated);
+   })
+ );
+ 
+@@ -101,4 +416,3 @@ incidentsRouter.delete(
+     return res.status(204).send();
+   })
+ );
+-
+diff --git a/backend/src/routes/users.ts b/backend/src/routes/users.ts
+index 3466f83..db01f5a 100644
+--- a/backend/src/routes/users.ts
++++ b/backend/src/routes/users.ts
+@@ -13,7 +13,9 @@ const createUserSchema = z.object({
+   fullName: z.string().min(2),
+   password: z.string().min(8),
+   role: z.nativeEnum(Role),
+-  isActive: z.boolean().optional().default(true)
++  isActive: z.boolean().optional().default(true),
++  liveLocationEnabled: z.boolean().optional().default(false),
++  liveLocationVisible: z.boolean().optional().default(false)
+ });
+ 
+ const updateUserSchema = z.object({
+@@ -21,9 +23,36 @@ const updateUserSchema = z.object({
+   fullName: z.string().min(2).optional(),
+   password: z.string().min(8).optional(),
+   role: z.nativeEnum(Role).optional(),
+-  isActive: z.boolean().optional()
++  isActive: z.boolean().optional(),
++  liveLocationEnabled: z.boolean().optional(),
++  liveLocationVisible: z.boolean().optional()
+ });
+ 
++const userSelect = {
++  id: true,
++  email: true,
++  fullName: true,
++  role: true,
++  isActive: true,
++  liveLocationEnabled: true,
++  liveLocationVisible: true,
++  createdAt: true,
++  updatedAt: true,
++  trustedDevice: {
++    select: {
++      id: true,
++      isActive: true,
++      deviceLabel: true,
++      platform: true,
++      browserLanguage: true,
++      timezone: true,
++      firstTrustedAt: true,
++      lastSeenAt: true,
++      resetAt: true
++    }
++  }
++} as const;
++
+ export const usersRouter = Router();
+ 
+ usersRouter.use(requireRoles(Role.ADMIN));
+@@ -33,15 +62,7 @@ usersRouter.get(
+   asyncHandler(async (_req, res) => {
+     const users = await prisma.user.findMany({
+       orderBy: { createdAt: "desc" },
+-      select: {
+-        id: true,
+-        email: true,
+-        fullName: true,
+-        role: true,
+-        isActive: true,
+-        createdAt: true,
+-        updatedAt: true
+-      }
++      select: userSelect
+     });
+     return res.json(users);
+   })
+@@ -58,9 +79,11 @@ usersRouter.post(
+         fullName: req.body.fullName,
+         role: req.body.role,
+         isActive: req.body.isActive,
++        liveLocationEnabled: req.body.liveLocationEnabled,
++        liveLocationVisible: req.body.liveLocationVisible,
+         passwordHash
+       },
+-      select: { id: true, email: true, fullName: true, role: true, isActive: true }
++      select: userSelect
+     });
+ 
+     await writeAudit(req.user!.id, "CREATE", "User", user.id);
+@@ -73,22 +96,111 @@ usersRouter.patch(
+   validateBody(updateUserSchema),
+   asyncHandler(async (req, res) => {
+     const data: Record<string, unknown> = { ...req.body };
++    const userId = z.string().uuid().parse(req.params.id);
+     if (req.body.password) {
+       data.passwordHash = await bcrypt.hash(req.body.password, 10);
+       delete data.password;
+     }
+ 
+     const user = await prisma.user.update({
+-      where: { id: req.params.id },
++      where: { id: userId },
+       data,
+-      select: { id: true, email: true, fullName: true, role: true, isActive: true }
++      select: userSelect
+     });
+ 
++    if (req.body.liveLocationEnabled === false) {
++      const now = new Date();
++      await prisma.locationSharingSession.updateMany({
++        where: {
++          userId,
++          isActive: true
++        },
++        data: {
++          isActive: false,
++          stoppedAt: now,
++          stoppedReason: "LIVE_TRACKING_DISABLED"
++        }
++      });
++
++      await prisma.liveLocationState.upsert({
++        where: { userId },
++        create: {
++          userId,
++          isSharing: false
++        },
++        update: {
++          isSharing: false
++        }
++      });
++    }
++
+     await writeAudit(req.user!.id, "UPDATE", "User", user.id);
+     return res.json(user);
+   })
+ );
+ 
++usersRouter.post(
++  "/:id/trusted-device/reset",
++  asyncHandler(async (req, res) => {
++    const userId = z.string().uuid().parse(req.params.id);
++    const existingUser = await prisma.user.findUnique({
++      where: { id: userId },
++      select: { id: true }
++    });
++
++    if (!existingUser) {
++      return res.status(404).json({ message: "User not found." });
++    }
++
++    const now = new Date();
++    const trustedDevice = await prisma.userTrustedDevice.findUnique({
++      where: { userId },
++      select: { id: true, isActive: true }
++    });
++
++    if (trustedDevice?.isActive) {
++      await prisma.userTrustedDevice.update({
++        where: { id: trustedDevice.id },
++        data: {
++          isActive: false,
++          resetAt: now,
++          resetByUserId: req.user!.id
++        }
++      });
++    }
++
++    await prisma.locationSharingSession.updateMany({
++      where: {
++        userId,
++        isActive: true
++      },
++      data: {
++        isActive: false,
++        stoppedAt: now,
++        stoppedReason: "TRUSTED_DEVICE_RESET"
++      }
++    });
++
++    await prisma.liveLocationState.upsert({
++      where: { userId },
++      create: {
++        userId,
++        isSharing: false
++      },
++      update: {
++        isSharing: false
++      }
++    });
++
++    await writeAudit(req.user!.id, "RESET_TRUSTED_DEVICE", "User", userId);
++    return res.json({
++      userId,
++      resetAt: now,
++      hadTrustedDevice: Boolean(trustedDevice?.isActive)
++    });
++  })
++);
++
+ usersRouter.delete(
+   "/:id",
+   asyncHandler(async (req, res) => {
+diff --git a/backend/src/types/express.d.ts b/backend/src/types/express.d.ts
+index 5523aa2..4de3609 100644
+--- a/backend/src/types/express.d.ts
++++ b/backend/src/types/express.d.ts
+@@ -6,6 +6,7 @@ declare global {
+       id: string;
+       email: string;
+       role: Role;
++      trustedDeviceId?: string | null;
+     }
+ 
+     interface Request {
+diff --git a/frontend/src/app/app.component.ts b/frontend/src/app/app.component.ts
+index d0d9d60..83c77a4 100644
+--- a/frontend/src/app/app.component.ts
++++ b/frontend/src/app/app.component.ts
+@@ -1,58 +1,299 @@
+ import { CommonModule } from "@angular/common";
+-import { Component, OnInit, inject } from "@angular/core";
++import { BreakpointObserver, Breakpoints } from "@angular/cdk/layout";
++import { Component, OnDestroy, OnInit, effect, inject, signal } from "@angular/core";
+ import { MatButtonModule } from "@angular/material/button";
++import { MatIconModule } from "@angular/material/icon";
++import { MatSidenav, MatSidenavModule } from "@angular/material/sidenav";
+ import { MatToolbarModule } from "@angular/material/toolbar";
+ import { Router, RouterLink, RouterLinkActive, RouterOutlet } from "@angular/router";
++import { Subscription } from "rxjs";
++import { Role } from "./models";
+ import { AuthService } from "./services/auth.service";
++import { LiveTrackingService } from "./services/live-tracking.service";
++
++type NavItem = {
++  label: string;
++  route: string;
++  roles?: Role[];
++  requiresLiveTracking?: boolean;
++};
+ 
+ @Component({
+   selector: "app-root",
+   standalone: true,
+-  imports: [CommonModule, RouterOutlet, RouterLink, RouterLinkActive, MatToolbarModule, MatButtonModule],
++  imports: [
++    CommonModule,
++    RouterOutlet,
++    RouterLink,
++    RouterLinkActive,
++    MatToolbarModule,
++    MatButtonModule,
++    MatIconModule,
++    MatSidenavModule
++  ],
+   template: `
+-    <mat-toolbar color="primary" *ngIf="auth.isLoggedIn()">
+-      <span class="title">Ain El Kharroube</span>
+-      <a mat-button routerLink="/dashboard" routerLinkActive="active">Dashboard</a>
+-      <a mat-button routerLink="/households" routerLinkActive="active">Households</a>
+-      <a mat-button routerLink="/cars" routerLinkActive="active">Cars</a>
+-      <a mat-button routerLink="/users" routerLinkActive="active" *ngIf="auth.currentUser()?.role === 'ADMIN'">Users</a>
+-      <span class="spacer"></span>
+-      <span class="user" *ngIf="auth.currentUser() as user">{{ user.fullName }} ({{ user.role }})</span>
+-      <button mat-button (click)="logout()">Logout</button>
+-    </mat-toolbar>
+-
+-    <router-outlet></router-outlet>
++    <ng-container *ngIf="auth.isLoggedIn(); else loggedOutOutlet">
++      <mat-sidenav-container class="app-shell">
++        <mat-sidenav #mobileNav mode="over" class="mobile-nav">
++          <div class="mobile-nav-header">
++            <strong>Navigation</strong>
++            <span *ngIf="auth.currentUser() as user">{{ user.fullName }} ({{ user.role }})</span>
++          </div>
++          <nav class="mobile-links">
++            <a
++              mat-button
++              class="mobile-link"
++              *ngFor="let item of navItems"
++              [routerLink]="item.route"
++              routerLinkActive="active"
++              [routerLinkActiveOptions]="{ exact: false }"
++              (click)="closeMobileNav(mobileNav)"
++              [hidden]="!canView(item)"
++            >
++              {{ item.label }}
++            </a>
++            <button mat-stroked-button color="warn" type="button" class="mobile-logout" (click)="logout(); closeMobileNav(mobileNav)">
++              Logout
++            </button>
++          </nav>
++        </mat-sidenav>
++
++        <mat-sidenav-content>
++          <mat-toolbar color="primary" class="topbar">
++            <button
++              mat-icon-button
++              type="button"
++              *ngIf="isMobile()"
++              (click)="mobileNav.toggle()"
++              aria-label="Open menu"
++            >
++              <mat-icon>menu</mat-icon>
++            </button>
++
++            <span class="title">Ain El Kharroube</span>
++
++            <nav class="desktop-links" *ngIf="!isMobile()">
++              <a
++                mat-button
++                *ngFor="let item of navItems"
++                [routerLink]="item.route"
++                routerLinkActive="active"
++                [routerLinkActiveOptions]="{ exact: false }"
++                [hidden]="!canView(item)"
++              >
++                {{ item.label }}
++              </a>
++            </nav>
++
++            <span class="spacer"></span>
++            <button
++              mat-stroked-button
++              type="button"
++              class="tracking-toggle"
++              *ngIf="auth.currentUser()?.liveLocationEnabled"
++              [disabled]="liveTracking.loading()"
++              (click)="toggleLiveTracking()"
++            >
++              {{
++                liveTracking.loading()
++                  ? 'Working...'
++                  : liveTracking.isSharing()
++                    ? 'Stop GPS'
++                    : 'Start GPS'
++              }}
++            </button>
++            <span class="tracking-state" *ngIf="!isMobile() && auth.currentUser()?.liveLocationEnabled">
++              {{ liveTracking.isSharing() ? 'GPS active' : 'GPS inactive' }}
++            </span>
++            <span class="user" *ngIf="!isMobile() && auth.currentUser() as user">{{ user.fullName }} ({{ user.role }})</span>
++            <button mat-button type="button" (click)="logout()">Logout</button>
++          </mat-toolbar>
++
++          <section class="tracking-banner" *ngIf="liveTracking.showPrompt()">
++            <p>Live tracking is available for your account. Do you want to start sharing your location?</p>
++            <div class="tracking-actions">
++              <button
++                mat-raised-button
++                color="primary"
++                type="button"
++                [disabled]="liveTracking.loading()"
++                (click)="startLiveTrackingFromPrompt()"
++              >
++                Start sharing
++              </button>
++              <button mat-button type="button" (click)="dismissLiveTrackingPrompt()">Not now</button>
++            </div>
++            <p class="tracking-error" *ngIf="liveTracking.permissionError()">{{ liveTracking.permissionError() }}</p>
++            <p class="tracking-error" *ngIf="liveTracking.error()">{{ liveTracking.error() }}</p>
++          </section>
++
++          <main class="app-content">
++            <router-outlet></router-outlet>
++          </main>
++        </mat-sidenav-content>
++      </mat-sidenav-container>
++    </ng-container>
++
++    <ng-template #loggedOutOutlet>
++      <router-outlet></router-outlet>
++    </ng-template>
+   `,
+   styles: [
+     `
++      .app-shell {
++        min-height: 100dvh;
++      }
++
++      .topbar {
++        min-height: var(--app-toolbar-height);
++        position: sticky;
++        top: 0;
++        z-index: 1000;
++        gap: 0.25rem;
++        padding-inline: clamp(0.5rem, 1.8vw, 1rem);
++      }
++
+       .title {
+         font-weight: 600;
+-        margin-right: 1rem;
++        margin-right: 0.35rem;
++        white-space: nowrap;
++      }
++
++      .desktop-links {
++        display: flex;
++        align-items: center;
++        gap: 0.2rem;
++        flex-wrap: wrap;
+       }
+ 
+       .spacer {
+         flex: 1;
+       }
+ 
++      .tracking-toggle {
++        margin-right: 0.4rem;
++        border-color: rgba(255, 255, 255, 0.55);
++      }
++
++      .tracking-state {
++        font-size: 0.82rem;
++        margin-right: 0.5rem;
++        opacity: 0.95;
++      }
++
+       .user {
+-        margin-right: 0.75rem;
++        margin-right: 0.5rem;
+         font-size: 0.9rem;
++        white-space: nowrap;
++        overflow: hidden;
++        text-overflow: ellipsis;
++        max-width: 28ch;
+       }
+ 
+       .active {
+         font-weight: 600;
++        text-decoration: underline;
++        text-underline-offset: 3px;
++      }
++
++      .mobile-nav {
++        width: min(84vw, 320px);
++        padding: 0.6rem;
++      }
++
++      .mobile-nav-header {
++        display: grid;
++        gap: 0.2rem;
++        margin-bottom: 0.5rem;
++      }
++
++      .mobile-nav-header span {
++        color: #475569;
++        font-size: 0.82rem;
++      }
++
++      .mobile-links {
++        display: grid;
++        gap: 0.2rem;
++      }
++
++      .mobile-link {
++        justify-content: flex-start;
++        text-align: left;
++      }
++
++      .mobile-logout {
++        margin-top: 0.4rem;
++      }
++
++      .app-content {
++        min-height: calc(100dvh - var(--app-toolbar-height));
++      }
++
++      .tracking-banner {
++        border-bottom: 1px solid #bfdbfe;
++        background: #eff6ff;
++        padding: 0.7rem clamp(0.7rem, 2vw, 1rem);
++        display: grid;
++        gap: 0.5rem;
++      }
++
++      .tracking-banner p {
++        margin: 0;
++        color: #1e3a8a;
++      }
++
++      .tracking-actions {
++        display: flex;
++        gap: 0.5rem;
++        flex-wrap: wrap;
++      }
++
++      .tracking-error {
++        color: #b91c1c !important;
++        font-weight: 600;
++      }
++
++      @media (max-width: 1023px) {
++        .title {
++          font-size: 1rem;
++        }
+       }
+     `
+   ]
+ })
+-export class AppComponent implements OnInit {
++export class AppComponent implements OnInit, OnDestroy {
+   readonly auth = inject(AuthService);
++  readonly liveTracking = inject(LiveTrackingService);
+   private readonly router = inject(Router);
++  private readonly breakpointObserver = inject(BreakpointObserver);
++  private breakpointSub?: Subscription;
++  private readonly userSyncEffect = effect(() => {
++    this.liveTracking.syncAuthenticatedUser(this.auth.currentUser());
++  });
++
++  readonly isMobile = signal(false);
++  readonly navItems: NavItem[] = [
++    { label: "Dashboard", route: "/dashboard" },
++    { label: "Live Tracking", route: "/live-tracking", requiresLiveTracking: true },
++    { label: "Households", route: "/households" },
++    { label: "Incidents", route: "/incidents" },
++    { label: "Plans", route: "/emergency-plans", roles: ["ADMIN", "CASE_WORKER"] },
++    { label: "Units", route: "/response-units", roles: ["ADMIN", "CASE_WORKER", "POLICE"] },
++    { label: "Alerts", route: "/officer-notifications", roles: ["ADMIN", "CASE_WORKER", "POLICE"] },
++    { label: "Cars", route: "/cars" },
++    { label: "Users", route: "/users", roles: ["ADMIN"] }
++  ];
+ 
+   ngOnInit() {
++    this.breakpointSub = this.breakpointObserver
++      .observe([Breakpoints.Handset, "(max-width: 1023px)"])
++      .subscribe((state) => this.isMobile.set(state.matches));
++
+     if (this.auth.isLoggedIn()) {
+       this.auth.me().subscribe({
+         error: () => {
++          this.liveTracking.prepareForLogout();
+           this.auth.logout();
+           void this.router.navigateByUrl("/login");
+         }
+@@ -60,9 +301,51 @@ export class AppComponent implements OnInit {
+     }
+   }
+ 
++  ngOnDestroy() {
++    this.breakpointSub?.unsubscribe();
++    this.userSyncEffect.destroy();
++  }
++
++  canView(item: NavItem) {
++    if (!item.roles?.length) {
++      return item.requiresLiveTracking ? Boolean(this.auth.currentUser()?.liveLocationEnabled) : true;
++    }
++    const role = this.auth.currentUser()?.role;
++    if (!role) {
++      return false;
++    }
++    if (!item.roles.includes(role)) {
++      return false;
++    }
++    return item.requiresLiveTracking ? Boolean(this.auth.currentUser()?.liveLocationEnabled) : true;
++  }
++
++  closeMobileNav(drawer: MatSidenav) {
++    if (this.isMobile()) {
++      void drawer.close();
++    }
++  }
++
+   logout() {
++    this.liveTracking.prepareForLogout();
+     this.auth.logout();
+     void this.router.navigateByUrl("/login");
+   }
++
++  toggleLiveTracking() {
++    if (this.liveTracking.isSharing()) {
++      this.liveTracking.stopSharing();
++      return;
++    }
++    this.liveTracking.startSharing();
++  }
++
++  startLiveTrackingFromPrompt() {
++    this.liveTracking.startSharing();
++  }
++
++  dismissLiveTrackingPrompt() {
++    this.liveTracking.dismissPrompt();
++  }
+ }
+ 
+diff --git a/frontend/src/app/app.routes.ts b/frontend/src/app/app.routes.ts
+index d31467e..4bc3ad9 100644
+--- a/frontend/src/app/app.routes.ts
++++ b/frontend/src/app/app.routes.ts
+@@ -3,6 +3,17 @@ import { authGuard } from "./guards/auth.guard";
+ import { roleGuard } from "./guards/role.guard";
+ 
+ export const routes: Routes = [
++  {
++    path: "live-tracking",
++    canActivate: [authGuard],
++    loadComponent: () =>
++      import("./pages/share-location.page").then((m) => m.ShareLocationPageComponent)
++  },
++  {
++    path: "share-location",
++    pathMatch: "full",
++    redirectTo: "live-tracking"
++  },
+   {
+     path: "login",
+     loadComponent: () => import("./pages/login.page").then((m) => m.LoginPageComponent)
+@@ -22,6 +33,35 @@ export const routes: Routes = [
+     canActivate: [authGuard],
+     loadComponent: () => import("./pages/cars.page").then((m) => m.CarsPageComponent)
+   },
++  {
++    path: "incidents",
++    canActivate: [authGuard],
++    loadComponent: () => import("./pages/incidents.page").then((m) => m.IncidentsPageComponent)
++  },
++  {
++    path: "incidents/:id",
++    canActivate: [authGuard],
++    loadComponent: () => import("./pages/incident-detail.page").then((m) => m.IncidentDetailPageComponent)
++  },
++  {
++    path: "emergency-plans",
++    canActivate: [authGuard, roleGuard],
++    data: { roles: ["ADMIN", "CASE_WORKER"] },
++    loadComponent: () => import("./pages/emergency-plans.page").then((m) => m.EmergencyPlansPageComponent)
++  },
++  {
++    path: "response-units",
++    canActivate: [authGuard, roleGuard],
++    data: { roles: ["ADMIN", "CASE_WORKER", "POLICE"] },
++    loadComponent: () => import("./pages/response-units.page").then((m) => m.ResponseUnitsPageComponent)
++  },
++  {
++    path: "officer-notifications",
++    canActivate: [authGuard, roleGuard],
++    data: { roles: ["POLICE", "ADMIN", "CASE_WORKER"] },
++    loadComponent: () =>
++      import("./pages/officer-notifications.page").then((m) => m.OfficerNotificationsPageComponent)
++  },
+   {
+     path: "households/:id",
+     canActivate: [authGuard, roleGuard],
+diff --git a/frontend/src/app/models.ts b/frontend/src/app/models.ts
+index 08458dd..47c4250 100644
+--- a/frontend/src/app/models.ts
++++ b/frontend/src/app/models.ts
+@@ -1,11 +1,157 @@
+ export type Role = "ADMIN" | "CASE_WORKER" | "FINANCE" | "VIEWER" | "POLICE";
+ 
++export type IncidentStatus =
++  | "DRAFT"
++  | "REPORTED"
++  | "ACTIVE_RESPONSE"
++  | "CONTAINED"
++  | "RESOLVED"
++  | "CLOSED"
++  | "CANCELLED"
++  | "OPEN"
++  | "IN_PROGRESS";
++
++export type DispatchStatus =
++  | "NOTIFIED"
++  | "ACKNOWLEDGED"
++  | "EN_ROUTE"
++  | "ARRIVED"
++  | "INVESTIGATING"
++  | "COMPLETED"
++  | "UNAVAILABLE";
++
++export type UnitType = "POLICE" | "CHECKPOINT" | "MEDICAL";
++export type UnitStatus = "AVAILABLE" | "BUSY" | "OFFLINE";
++
++export type EmergencyPlanType =
++  | "SUSPICIOUS_VEHICLE"
++  | "SUSPICIOUS_PERSON"
++  | "ARMED_THREAT"
++  | "MEDICAL_EMERGENCY"
++  | "VILLAGE_LOCKDOWN"
++  | "CUSTOM";
++
++export type EmergencySeverity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
++
++export type IncidentTimelineEventType =
++  | "INCIDENT_CREATED"
++  | "VEHICLE_UPDATED"
++  | "PLAN_ACTIVATED"
++  | "NOTIFICATIONS_SENT"
++  | "OFFICER_ACKNOWLEDGED"
++  | "UNIT_EN_ROUTE"
++  | "UNIT_ARRIVED"
++  | "CHECKPOINT_ACTIVATED"
++  | "MEDICAL_SUPPORT_REQUESTED"
++  | "INCIDENT_RESOLVED"
++  | "INCIDENT_CLOSED"
++  | "DISPATCH_STATUS_CHANGED"
++  | "NOTE_ADDED";
++
+ export interface User {
+   id: string;
+   email: string;
+   fullName: string;
+   role: Role;
+   isActive?: boolean;
++  liveLocationEnabled?: boolean;
++  liveLocationVisible?: boolean;
++  trustedDeviceAssigned?: boolean;
++  trustedDeviceLastSeenAt?: string | null;
++}
++
++export interface TrustedDeviceSummary {
++  id: string;
++  isActive: boolean;
++  deviceLabel: string | null;
++  platform: string | null;
++  browserLanguage: string | null;
++  timezone: string | null;
++  firstTrustedAt: string;
++  lastSeenAt: string;
++  resetAt: string | null;
++}
++
++export type LocationUpdateSource = "BROWSER_GEOLOCATION" | "SHARE_LINK" | "MANUAL_OVERRIDE";
++
++export interface LiveLocationShareStatus {
++  user: {
++    id: string;
++    fullName: string;
++    role: Role;
++  };
++  isSharing: boolean;
++  lastUpdateAt: string | null;
++  lastRecordedAt: string | null;
++}
++
++export interface LivePersonLocation {
++  personId: string;
++  fullName: string;
++  role: Role;
++  latitude: number;
++  longitude: number;
++  accuracyM: number | null;
++  lastRecordedAt: string | null;
++  lastReceivedAt: string | null;
++  source: LocationUpdateSource | null;
++  batteryLevel: number | null;
++  isTrackingActive: boolean;
++  isStale: boolean;
++}
++
++export interface LocationHistoryPoint {
++  id: string;
++  latitude: number;
++  longitude: number;
++  accuracyM: number;
++  source: LocationUpdateSource;
++  batteryLevel: number | null;
++  recordedAt: string;
++  receivedAt: string;
++  isSharingSnapshot: boolean;
++  sessionId: string | null;
++}
++
++export interface LocationHistoryResponse {
++  person: {
++    id: string;
++    fullName: string;
++    role: Role;
++  };
++  window: {
++    since: string;
++    until: string;
++    limit: number;
++  };
++  points: LocationHistoryPoint[];
++}
++
++export interface LocationShareLinkRecord {
++  id: string;
++  userId: string;
++  label: string | null;
++  expiresAt: string;
++  createdAt: string;
++  token: string;
++  shareUrl: string;
++  user: {
++    id: string;
++    fullName: string;
++  };
++}
++
++export interface LocationShareLinkSummary {
++  id: string;
++  label: string | null;
++  expiresAt: string;
++  revokedAt: string | null;
++  lastUsedAt: string | null;
++  createdAt: string;
++  createdBy: {
++    id: string;
++    fullName: string;
++  } | null;
+ }
+ 
+ export interface Zone {
+@@ -119,6 +265,176 @@ export interface Household {
+   incidents?: any[];
+ }
+ 
++export interface EmergencyPolicePost {
++  id?: string;
++  label: string;
++  lat: number;
++  lng: number;
++  officersCount: number;
++  notes?: string | null;
++}
++
++export interface EmergencyPlanStep {
++  id?: string;
++  stepOrder: number;
++  title: string;
++  description?: string | null;
++  icon?: string | null;
++  unitTypeRequired: UnitType;
++  isRequired: boolean;
++}
++
++export interface EmergencyPlan {
++  id: string;
++  name: string;
++  type: EmergencyPlanType;
++  severity: EmergencySeverity;
++  description?: string | null;
++  defaultNotificationTitle?: string | null;
++  defaultNotificationMessage?: string | null;
++  isActive: boolean;
++  createdAt: string;
++  updatedAt: string;
++  createdBy?: {
++    id: string;
++    fullName: string;
++    email: string;
++  };
++  steps: EmergencyPlanStep[];
++  policePosts: EmergencyPolicePost[];
++}
++
++export interface IncidentVehicle {
++  id?: string;
++  incidentId?: string;
++  vehicleType?: string | null;
++  brand?: string | null;
++  model?: string | null;
++  color?: string | null;
++  plateNumber?: string | null;
++  registrationCountry?: string | null;
++  directionOfTravel?: string | null;
++  passengerCount?: number | null;
++  notes?: string | null;
++  photoUrl?: string | null;
++  createdAt?: string;
++  updatedAt?: string;
++}
++
++export interface ResponseUnit {
++  id: string;
++  name: string;
++  type: UnitType;
++  status: UnitStatus;
++  latitude: number | null;
++  longitude: number | null;
++  assignedOfficerId: string | null;
++  assignedOfficer?: {
++    id: string;
++    fullName: string;
++    email?: string;
++    role: Role;
++  } | null;
++  createdAt: string;
++  updatedAt: string;
++}
++
++export interface IncidentDispatch {
++  id: string;
++  incidentId: string;
++  unitId: string;
++  officerId: string | null;
++  status: DispatchStatus;
++  notifiedAt: string | null;
++  acknowledgedAt: string | null;
++  enRouteAt: string | null;
++  arrivedAt: string | null;
++  completedAt: string | null;
++  notes: string | null;
++  unit: ResponseUnit;
++  officer?: {
++    id: string;
++    fullName: string;
++    email?: string;
++    role: Role;
++  } | null;
++  createdAt: string;
++  updatedAt: string;
++}
++
++export interface IncidentTimelineEntry {
++  id: string;
++  incidentId: string;
++  eventType: IncidentTimelineEventType;
++  message: string;
++  metadata?: Record<string, unknown> | null;
++  createdById?: string | null;
++  createdBy?: {
++    id: string;
++    fullName: string;
++    role: Role;
++  } | null;
++  createdAt: string;
++}
++
++export interface IncidentRecord {
++  id: string;
++  incidentCode: string;
++  title: string | null;
++  householdId: string | null;
++  type: "MEDICAL" | "HOUSING" | "UTILITY" | "PROTECTION" | "OTHER";
++  priority: "LOW" | "MEDIUM" | "HIGH";
++  severity: EmergencySeverity;
++  description: string;
++  assignedUserId: string | null;
++  emergencyPlanId: string | null;
++  locationLabel: string | null;
++  locationLat: number | null;
++  locationLng: number | null;
++  locationAccuracyM: number | null;
++  status: IncidentStatus;
++  dueDate: string | null;
++  activatedAt: string | null;
++  resolvedAt: string | null;
++  closedAt: string | null;
++  resolutionNotes: string | null;
++  vehicle?: IncidentVehicle | null;
++  emergencyPlan?: EmergencyPlan | null;
++  dispatches?: IncidentDispatch[];
++  timeline?: IncidentTimelineEntry[];
++  notifications?: NotificationItem[];
++  createdAt: string;
++  updatedAt: string;
++}
++
++export interface NotificationItem {
++  id: string;
++  title: string;
++  message: string;
++  isRead: boolean;
++  incidentId?: string | null;
++  dispatchId?: string | null;
++  incidentType?: "MEDICAL" | "HOUSING" | "UTILITY" | "PROTECTION" | "OTHER" | null;
++  incidentPriority?: "LOW" | "MEDIUM" | "HIGH" | null;
++  incidentSeverity?: EmergencySeverity | null;
++  locationLabel?: string | null;
++  vehicleSummary?: string | null;
++  actionRequired?: string | null;
++  metadata?: Record<string, unknown> | null;
++  emergencyPlanId?: string | null;
++  policePostLabel?: string | null;
++  targetLat?: number | null;
++  targetLng?: number | null;
++  incident?: IncidentRecord | null;
++  dispatch?: {
++    id: string;
++    status: DispatchStatus;
++    unit?: { id: string; name: string; type: UnitType };
++  } | null;
++  readAt?: string | null;
++  createdAt: string;
++}
++
+ export interface DashboardSummary {
+   kpis: {
+     totalHouseholdsActive: number;
+@@ -189,43 +505,26 @@ export interface DashboardSummary {
+   }>;
+   recentArrivals: Household[];
+   emergencyPlan?: EmergencyPlan | null;
+-}
+-
+-export interface EmergencyPolicePost {
+-  id?: string;
+-  label: string;
+-  lat: number;
+-  lng: number;
+-  officersCount: number;
+-  notes?: string | null;
+-}
+-
+-export interface EmergencyPlan {
+-  id: string;
+-  name: string;
+-  description?: string | null;
+-  isActive: boolean;
+-  createdAt: string;
+-  updatedAt: string;
+-  createdBy?: {
++  activeIncidents: IncidentRecord[];
++  incidentMarkers: Array<{
+     id: string;
+-    fullName: string;
+-    email: string;
+-  };
+-  policePosts: EmergencyPolicePost[];
+-}
+-
+-export interface NotificationItem {
+-  id: string;
+-  title: string;
+-  message: string;
+-  isRead: boolean;
+-  emergencyPlanId?: string | null;
+-  policePostLabel?: string | null;
+-  targetLat?: number | null;
+-  targetLng?: number | null;
+-  readAt?: string | null;
+-  createdAt: string;
++    incidentCode: string;
++    title: string | null;
++    type: "MEDICAL" | "HOUSING" | "UTILITY" | "PROTECTION" | "OTHER";
++    priority: "LOW" | "MEDIUM" | "HIGH";
++    severity: EmergencySeverity;
++    status: IncidentStatus;
++    locationLabel: string | null;
++    locationLat: number | null;
++    locationLng: number | null;
++    vehicle?: IncidentVehicle | null;
++  }>;
++  responseUnits: ResponseUnit[];
++  activeDispatches: Array<
++    IncidentDispatch & {
++      incident: IncidentRecord;
++    }
++  >;
+ }
+ 
+ export interface CarRecord {
+@@ -273,4 +572,3 @@ export interface HouseholdImportSummary {
+   warnings: HouseholdImportIssue[];
+   skipped: HouseholdImportIssue[];
+ }
+-
+diff --git a/frontend/src/app/pages/login.page.ts b/frontend/src/app/pages/login.page.ts
+index 3a8bb09..9acd2ec 100644
+--- a/frontend/src/app/pages/login.page.ts
++++ b/frontend/src/app/pages/login.page.ts
+@@ -48,16 +48,16 @@ import { AuthService } from "../services/auth.service";
+   styles: [
+     `
+       .login-shell {
+-        min-height: 100vh;
++        min-height: 100dvh;
+         display: grid;
+         place-items: center;
+-        padding: 1rem;
++        padding: clamp(0.75rem, 4vw, 1.5rem);
+         background: linear-gradient(120deg, #dff2eb, #f9fafb);
+       }
+ 
+       mat-card {
+         width: min(420px, 100%);
+-        padding: 1rem;
++        padding: clamp(0.85rem, 2.2vw, 1.25rem);
+       }
+ 
+       form {
+@@ -81,6 +81,7 @@ import { AuthService } from "../services/auth.service";
+ 
+       button {
+         width: 100%;
++        min-height: 44px;
+       }
+     `
+   ]
+@@ -112,9 +113,9 @@ export class LoginPageComponent {
+         this.loading.set(false);
+         void this.router.navigateByUrl("/dashboard");
+       },
+-      error: () => {
++      error: (err: { error?: { message?: string } }) => {
+         this.loading.set(false);
+-        this.error.set("Invalid credentials");
++        this.error.set(String(err?.error?.message ?? "Invalid credentials"));
+       }
+     });
+   }
+diff --git a/frontend/src/app/pages/users.page.ts b/frontend/src/app/pages/users.page.ts
+index 030d44f..656492e 100644
+--- a/frontend/src/app/pages/users.page.ts
++++ b/frontend/src/app/pages/users.page.ts
+@@ -6,20 +6,32 @@ import { MatCardModule } from "@angular/material/card";
+ import { MatFormFieldModule } from "@angular/material/form-field";
+ import { MatInputModule } from "@angular/material/input";
+ import { MatSelectModule } from "@angular/material/select";
++import { Role, TrustedDeviceSummary, User } from "../models";
+ import { ApiService } from "../services/api.service";
+-import { Role, User } from "../models";
+ 
+-type AdminUser = User & { createdAt?: string; updatedAt?: string };
++type AdminUser = User & {
++  createdAt?: string;
++  updatedAt?: string;
++  trustedDevice?: TrustedDeviceSummary | null;
++};
+ 
+ @Component({
+   selector: "app-users-page",
+   standalone: true,
+-  imports: [CommonModule, ReactiveFormsModule, MatCardModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatButtonModule],
++  imports: [
++    CommonModule,
++    ReactiveFormsModule,
++    MatCardModule,
++    MatFormFieldModule,
++    MatInputModule,
++    MatSelectModule,
++    MatButtonModule
++  ],
+   template: `
+     <div class="shell">
+       <mat-card>
+         <h2>User Management</h2>
+-        <p class="muted">Admin can create users and assign role (including police accounts).</p>
++        <p class="muted">Admin can create users, configure live tracking, and reset trusted devices.</p>
+ 
+         <form [formGroup]="createForm" (ngSubmit)="createUser()" class="form-grid">
+           <mat-form-field appearance="outline">
+@@ -52,6 +64,22 @@ type AdminUser = User & { createdAt?: string; updatedAt?: string };
+             </mat-select>
+           </mat-form-field>
+ 
++          <mat-form-field appearance="outline">
++            <mat-label>Live tracking sender</mat-label>
++            <mat-select formControlName="liveLocationEnabled">
++              <mat-option [value]="true">Enabled</mat-option>
++              <mat-option [value]="false">Disabled</mat-option>
++            </mat-select>
++          </mat-form-field>
++
++          <mat-form-field appearance="outline">
++            <mat-label>Visible on live map</mat-label>
++            <mat-select formControlName="liveLocationVisible">
++              <mat-option [value]="true">Visible</mat-option>
++              <mat-option [value]="false">Hidden</mat-option>
++            </mat-select>
++          </mat-form-field>
++
+           <div class="actions">
+             <button mat-raised-button color="primary" [disabled]="saving() || createForm.invalid">
+               {{ saving() ? 'Creating...' : 'Create User' }}
+@@ -73,14 +101,65 @@ type AdminUser = User & { createdAt?: string; updatedAt?: string };
+                 <th>Email</th>
+                 <th>Role</th>
+                 <th>Status</th>
++                <th>Live sender</th>
++                <th>Live map</th>
++                <th>Trusted device</th>
++                <th>Actions</th>
+               </tr>
+             </thead>
+             <tbody>
+               <tr *ngFor="let user of users()">
+-                <td>{{ user.fullName }}</td>
+-                <td>{{ user.email }}</td>
+-                <td>{{ user.role }}</td>
+-                <td>{{ user.isActive ? 'Active' : 'Disabled' }}</td>
++                <td data-label="Name">{{ user.fullName }}</td>
++                <td data-label="Email">{{ user.email }}</td>
++                <td data-label="Role">{{ user.role }}</td>
++                <td data-label="Status">{{ user.isActive ? 'Active' : 'Disabled' }}</td>
++                <td data-label="Live sender">{{ user.liveLocationEnabled ? 'Enabled' : 'Disabled' }}</td>
++                <td data-label="Live map">{{ user.liveLocationVisible ? 'Visible' : 'Hidden' }}</td>
++                <td data-label="Trusted device">
++                  <ng-container *ngIf="user.trustedDevice?.isActive; else noTrustedDevice">
++                    <div><strong>Assigned</strong></div>
++                    <div class="muted small">{{ user.trustedDevice?.deviceLabel || user.trustedDevice?.platform || 'Browser device' }}</div>
++                    <div class="muted small">Last seen: {{ user.trustedDevice?.lastSeenAt | date:'yyyy-MM-dd HH:mm' }}</div>
++                  </ng-container>
++                  <ng-template #noTrustedDevice>
++                    <span class="muted">Not assigned</span>
++                  </ng-template>
++                </td>
++                <td data-label="Actions" class="row-actions">
++                  <button
++                    mat-stroked-button
++                    type="button"
++                    [disabled]="busyUserId() === user.id"
++                    (click)="toggleLiveSender(user)"
++                  >
++                    {{ user.liveLocationEnabled ? 'Disable sender' : 'Enable sender' }}
++                  </button>
++                  <button
++                    mat-stroked-button
++                    type="button"
++                    [disabled]="busyUserId() === user.id"
++                    (click)="toggleLiveMap(user)"
++                  >
++                    {{ user.liveLocationVisible ? 'Hide on map' : 'Show on map' }}
++                  </button>
++                  <button
++                    mat-stroked-button
++                    type="button"
++                    [disabled]="busyUserId() === user.id"
++                    (click)="toggleAccountStatus(user)"
++                  >
++                    {{ user.isActive ? 'Disable account' : 'Enable account' }}
++                  </button>
++                  <button
++                    mat-stroked-button
++                    color="warn"
++                    type="button"
++                    [disabled]="busyUserId() === user.id"
++                    (click)="resetTrustedDevice(user)"
++                  >
++                    Reset trusted device
++                  </button>
++                </td>
+               </tr>
+             </tbody>
+           </table>
+@@ -91,18 +170,21 @@ type AdminUser = User & { createdAt?: string; updatedAt?: string };
+   styles: [
+     `
+       .shell {
+-        padding: 1rem;
++        padding: var(--page-padding);
+         display: grid;
+         gap: 1rem;
+       }
+       .muted {
+         color: #64748b;
+       }
++      .small {
++        font-size: 0.75rem;
++      }
+       .form-grid {
+         margin-top: 0.75rem;
+         display: grid;
+         gap: 0.75rem;
+-        grid-template-columns: repeat(2, minmax(0, 1fr));
++        grid-template-columns: 1fr;
+       }
+       .actions {
+         grid-column: 1 / -1;
+@@ -116,6 +198,8 @@ type AdminUser = User & { createdAt?: string; updatedAt?: string };
+         font-weight: 600;
+       }
+       .table-wrap {
++        border: 1px solid #e2e8f0;
++        border-radius: 0.5rem;
+         overflow-x: auto;
+       }
+       table {
+@@ -127,10 +211,77 @@ type AdminUser = User & { createdAt?: string; updatedAt?: string };
+         text-align: left;
+         padding: 0.5rem;
+         border-bottom: 1px solid #e2e8f0;
++        overflow-wrap: anywhere;
++        vertical-align: top;
++      }
++      .row-actions {
++        display: grid;
++        grid-template-columns: 1fr;
++        gap: 0.35rem;
++        min-width: 180px;
+       }
+-      @media (max-width: 900px) {
++
++      @media (min-width: 820px) {
+         .form-grid {
++          grid-template-columns: repeat(2, minmax(0, 1fr));
++        }
++      }
++
++      @media (max-width: 767px) {
++        .table-wrap {
++          border: 0;
++          overflow: visible;
++        }
++
++        table,
++        tbody,
++        tr,
++        td {
++          display: block;
++          width: 100%;
++        }
++
++        thead {
++          display: none;
++        }
++
++        tr {
++          border: 1px solid #e2e8f0;
++          border-radius: 0.6rem;
++          background: #fff;
++          margin-bottom: 0.7rem;
++          padding: 0.2rem 0.65rem;
++        }
++
++        td {
++          border-bottom: 1px dashed #dbe1ea;
++          padding: 0.5rem 0;
++          display: flex;
++          align-items: flex-start;
++          justify-content: space-between;
++          gap: 0.6rem;
++        }
++
++        td::before {
++          content: attr(data-label);
++          font-weight: 600;
++          color: #475569;
++          font-size: 0.82rem;
++          flex: 0 0 auto;
++        }
++
++        td:last-child {
++          border-bottom: 0;
++        }
++
++        td[data-label="Actions"] {
++          display: grid;
+           grid-template-columns: 1fr;
++          gap: 0.35rem;
++        }
++
++        td[data-label="Actions"]::before {
++          margin-bottom: 0.2rem;
+         }
+       }
+     `
+@@ -142,6 +293,7 @@ export class UsersPageComponent implements OnInit {
+ 
+   readonly users = signal<AdminUser[]>([]);
+   readonly saving = signal(false);
++  readonly busyUserId = signal<string | null>(null);
+   readonly message = signal<string | null>(null);
+   readonly error = signal<string | null>(null);
+   readonly roles: Role[] = ["ADMIN", "CASE_WORKER", "FINANCE", "VIEWER", "POLICE"];
+@@ -151,7 +303,9 @@ export class UsersPageComponent implements OnInit {
+     email: ["", [Validators.required, Validators.email]],
+     password: ["", [Validators.required, Validators.minLength(8)]],
+     role: ["VIEWER" as Role, Validators.required],
+-    isActive: [true]
++    isActive: [true],
++    liveLocationEnabled: [false],
++    liveLocationVisible: [false]
+   });
+ 
+   ngOnInit() {
+@@ -168,15 +322,17 @@ export class UsersPageComponent implements OnInit {
+     this.message.set(null);
+     this.error.set(null);
+     this.api.post<AdminUser>("/users", this.createForm.getRawValue()).subscribe({
+-      next: () => {
++      next: (created) => {
+         this.saving.set(false);
+-        this.message.set("User created.");
++        this.message.set(`User ${created.fullName} created.`);
+         this.createForm.patchValue({
+           fullName: "",
+           email: "",
+           password: "",
+           role: "VIEWER",
+-          isActive: true
++          isActive: true,
++          liveLocationEnabled: false,
++          liveLocationVisible: false
+         });
+         this.loadUsers();
+       },
+@@ -187,6 +343,58 @@ export class UsersPageComponent implements OnInit {
+     });
+   }
+ 
++  toggleLiveSender(user: AdminUser) {
++    this.updateUser(user, { liveLocationEnabled: !user.liveLocationEnabled }, user.liveLocationEnabled ? "Live sender disabled." : "Live sender enabled.");
++  }
++
++  toggleLiveMap(user: AdminUser) {
++    this.updateUser(user, { liveLocationVisible: !user.liveLocationVisible }, user.liveLocationVisible ? "Live map visibility disabled." : "Live map visibility enabled.");
++  }
++
++  toggleAccountStatus(user: AdminUser) {
++    this.updateUser(user, { isActive: !user.isActive }, user.isActive ? "User disabled." : "User enabled.");
++  }
++
++  resetTrustedDevice(user: AdminUser) {
++    this.busyUserId.set(user.id);
++    this.error.set(null);
++    this.message.set(null);
++
++    this.api.resetTrustedDevice(user.id).subscribe({
++      next: (response) => {
++        this.busyUserId.set(null);
++        this.message.set(
++          response.hadTrustedDevice
++            ? `Trusted device reset for ${user.fullName}.`
++            : `${user.fullName} has no active trusted device to reset.`
++        );
++        this.loadUsers();
++      },
++      error: (err) => {
++        this.busyUserId.set(null);
++        this.error.set(String(err?.error?.message ?? "Could not reset trusted device."));
++      }
++    });
++  }
++
++  private updateUser(user: AdminUser, payload: Partial<User>, successMessage: string) {
++    this.busyUserId.set(user.id);
++    this.error.set(null);
++    this.message.set(null);
++
++    this.api.updateUser(user.id, payload).subscribe({
++      next: (updated) => {
++        this.busyUserId.set(null);
++        this.message.set(successMessage);
++        this.users.update((rows) => rows.map((row) => (row.id === updated.id ? { ...row, ...updated } : row)));
++      },
++      error: (err) => {
++        this.busyUserId.set(null);
++        this.error.set(String(err?.error?.message ?? "Could not update user."));
++      }
++    });
++  }
++
+   private loadUsers() {
+     this.api.get<AdminUser[]>("/users").subscribe({
+       next: (users) => this.users.set(users),
+diff --git a/frontend/src/app/services/api.service.ts b/frontend/src/app/services/api.service.ts
+index be6f15c..80314d7 100644
+--- a/frontend/src/app/services/api.service.ts
++++ b/frontend/src/app/services/api.service.ts
+@@ -1,7 +1,23 @@
+-import { HttpClient } from "@angular/common/http";
++import { HttpClient, HttpParams } from "@angular/common/http";
+ import { Injectable } from "@angular/core";
+ import { Observable } from "rxjs";
+ import { environment } from "../../environments/environment";
++import {
++  LiveLocationShareStatus,
++  LivePersonLocation,
++  LocationHistoryResponse,
++  LocationUpdateSource,
++  User
++} from "../models";
++
++export type LocationUpdateInput = {
++  latitude: number;
++  longitude: number;
++  accuracy: number;
++  timestamp: string;
++  source?: LocationUpdateSource;
++  batteryLevel?: number | null;
++};
+ 
+ @Injectable({ providedIn: "root" })
+ export class ApiService {
+@@ -34,5 +50,87 @@ export class ApiService {
+   delete<T>(path: string): Observable<T> {
+     return this.http.delete<T>(`${environment.apiBaseUrl}${path}`);
+   }
+-}
+ 
++  startLiveTracking() {
++    return this.http.post<{ isSharing: boolean; sessionId: string; startedAt: string }>(
++      `${environment.apiBaseUrl}/live-tracking/start`,
++      {}
++    );
++  }
++
++  stopLiveTracking() {
++    return this.http.post<{ isSharing: boolean; stoppedAt: string }>(`${environment.apiBaseUrl}/live-tracking/stop`, {});
++  }
++
++  sendLiveTrackingUpdate(payload: LocationUpdateInput) {
++    return this.http.post<{ accepted: boolean; receivedAt: string; recordedAt: string }>(
++      `${environment.apiBaseUrl}/live-tracking/update`,
++      payload
++    );
++  }
++
++  getLiveTrackingStatus() {
++    return this.http.get<LiveLocationShareStatus>(`${environment.apiBaseUrl}/live-tracking/status`);
++  }
++
++  getLatestLiveTrackedUsers(activeOnly = false, staleAfterSeconds = 120) {
++    const params = new HttpParams()
++      .set("activeOnly", String(activeOnly))
++      .set("staleAfterSeconds", String(staleAfterSeconds));
++
++    return this.http.get<LivePersonLocation[]>(`${environment.apiBaseUrl}/locations/latest`, { params });
++  }
++
++  getLiveTrackingHistory(personId: string, options?: { since?: string; until?: string; limit?: number }) {
++    let params = new HttpParams();
++    if (options?.since) {
++      params = params.set("since", options.since);
++    }
++    if (options?.until) {
++      params = params.set("until", options.until);
++    }
++    if (typeof options?.limit === "number") {
++      params = params.set("limit", String(options.limit));
++    }
++
++    return this.http.get<LocationHistoryResponse>(`${environment.apiBaseUrl}/locations/history/${personId}`, {
++      params
++    });
++  }
++
++  updateUser(userId: string, payload: Partial<User> & { password?: string }) {
++    return this.http.patch<User>(`${environment.apiBaseUrl}/users/${userId}`, payload);
++  }
++
++  resetTrustedDevice(userId: string) {
++    return this.http.post<{ userId: string; resetAt: string; hadTrustedDevice: boolean }>(
++      `${environment.apiBaseUrl}/users/${userId}/trusted-device/reset`,
++      {}
++    );
++  }
++
++  // Backward-compatible wrappers while legacy callers are being migrated.
++  startLocationSharing() {
++    return this.startLiveTracking();
++  }
++
++  stopLocationSharing() {
++    return this.stopLiveTracking();
++  }
++
++  sendLocationUpdate(payload: LocationUpdateInput) {
++    return this.sendLiveTrackingUpdate(payload);
++  }
++
++  getLocationSharingStatus() {
++    return this.getLiveTrackingStatus();
++  }
++
++  getLatestLocations(activeOnly = false, staleAfterSeconds = 120) {
++    return this.getLatestLiveTrackedUsers(activeOnly, staleAfterSeconds);
++  }
++
++  getLocationHistory(personId: string, options?: { since?: string; until?: string; limit?: number }) {
++    return this.getLiveTrackingHistory(personId, options);
++  }
++}
+diff --git a/frontend/src/app/services/auth.service.ts b/frontend/src/app/services/auth.service.ts
+index 8645485..e953d95 100644
+--- a/frontend/src/app/services/auth.service.ts
++++ b/frontend/src/app/services/auth.service.ts
+@@ -3,6 +3,7 @@ import { Injectable, signal } from "@angular/core";
+ import { Observable, tap } from "rxjs";
+ import { environment } from "../../environments/environment";
+ import { User, Role } from "../models";
++import { DeviceIdentityService } from "./device-identity.service";
+ 
+ interface LoginResponse {
+   token: string;
+@@ -16,11 +17,15 @@ export class AuthService {
+ 
+   readonly currentUser = signal<User | null>(this.readUser());
+ 
+-  constructor(private readonly http: HttpClient) {}
++  constructor(
++    private readonly http: HttpClient,
++    private readonly deviceIdentity: DeviceIdentityService
++  ) {}
+ 
+   login(email: string, password: string): Observable<LoginResponse> {
++    const device = this.deviceIdentity.getLoginDevicePayload();
+     return this.http
+-      .post<LoginResponse>(`${environment.apiBaseUrl}/auth/login`, { email, password })
++      .post<LoginResponse>(`${environment.apiBaseUrl}/auth/login`, { email, password, device })
+       .pipe(
+         tap((response) => {
+           localStorage.setItem(this.tokenKey, response.token);

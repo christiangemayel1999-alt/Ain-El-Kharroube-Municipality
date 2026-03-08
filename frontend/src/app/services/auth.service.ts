@@ -3,6 +3,7 @@ import { Injectable, signal } from "@angular/core";
 import { Observable, tap } from "rxjs";
 import { environment } from "../../environments/environment";
 import { User, Role } from "../models";
+import { DeviceIdentityService } from "./device-identity.service";
 
 interface LoginResponse {
   token: string;
@@ -16,11 +17,15 @@ export class AuthService {
 
   readonly currentUser = signal<User | null>(this.readUser());
 
-  constructor(private readonly http: HttpClient) {}
+  constructor(
+    private readonly http: HttpClient,
+    private readonly deviceIdentity: DeviceIdentityService
+  ) {}
 
   login(email: string, password: string): Observable<LoginResponse> {
+    const device = this.deviceIdentity.getLoginDevicePayload();
     return this.http
-      .post<LoginResponse>(`${environment.apiBaseUrl}/auth/login`, { email, password })
+      .post<LoginResponse>(`${environment.apiBaseUrl}/auth/login`, { email, password, device })
       .pipe(
         tap((response) => {
           localStorage.setItem(this.tokenKey, response.token);

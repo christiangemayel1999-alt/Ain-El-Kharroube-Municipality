@@ -7,6 +7,12 @@ import {
   HouseholdStatus,
   HousingUnitStatus,
   RentalAgreementStatus,
+  EmergencyPlanType,
+  EmergencySeverity,
+  UnitStatus,
+  UnitType,
+  DispatchStatus,
+  IncidentTimelineEventType,
   IncidentPriority,
   IncidentStatus,
   IncidentType,
@@ -192,20 +198,227 @@ async function main() {
     }
   });
 
-  await prisma.incident.upsert({
+  const incident = await prisma.incident.upsert({
     where: { incidentCode: "INC-0001" },
-    update: {},
+    update: {
+      title: "Suspicious vehicle near east entrance",
+      type: IncidentType.PROTECTION,
+      priority: IncidentPriority.HIGH,
+      severity: EmergencySeverity.HIGH,
+      description: "White SUV circling checkpoint repeatedly.",
+      assignedUserId: cw1.id,
+      emergencyPlanId: null,
+      locationLabel: "East Entrance",
+      locationLat: 33.936665,
+      locationLng: 35.699494,
+      status: IncidentStatus.REPORTED,
+      dueDate: new Date("2026-03-10")
+    },
     create: {
       incidentCode: "INC-0001",
+      title: "Suspicious vehicle near east entrance",
       householdId: household.id,
-      type: IncidentType.HOUSING,
+      type: IncidentType.PROTECTION,
       priority: IncidentPriority.HIGH,
-      description: "Water leak reported",
+      severity: EmergencySeverity.HIGH,
+      description: "White SUV circling checkpoint repeatedly.",
       assignedUserId: cw1.id,
-      status: IncidentStatus.OPEN,
+      locationLabel: "East Entrance",
+      locationLat: 33.936665,
+      locationLng: 35.699494,
+      status: IncidentStatus.REPORTED,
       dueDate: new Date("2026-03-10")
     }
   });
+
+  await prisma.incidentVehicle.upsert({
+    where: { incidentId: incident.id },
+    update: {
+      vehicleType: "SUV",
+      brand: "Hyundai",
+      model: "Tucson",
+      color: "White",
+      plateNumber: "B 284763",
+      registrationCountry: "LB",
+      directionOfTravel: "Toward east checkpoint",
+      passengerCount: 2,
+      notes: "Driver slowed down at checkpoint and left quickly",
+      photoUrl: null
+    },
+    create: {
+      incidentId: incident.id,
+      vehicleType: "SUV",
+      brand: "Hyundai",
+      model: "Tucson",
+      color: "White",
+      plateNumber: "B 284763",
+      registrationCountry: "LB",
+      directionOfTravel: "Toward east checkpoint",
+      passengerCount: 2,
+      notes: "Driver slowed down at checkpoint and left quickly",
+      photoUrl: null
+    }
+  });
+
+  await prisma.incidentTimeline.create({
+    data: {
+      incidentId: incident.id,
+      eventType: IncidentTimelineEventType.INCIDENT_CREATED,
+      message: "Incident was created during seed data setup.",
+      createdById: admin.id
+    }
+  });
+
+  await prisma.responseUnit.deleteMany({});
+  await prisma.responseUnit.createMany({
+    data: [
+      {
+        name: "Patrol Alpha",
+        type: UnitType.POLICE,
+        status: UnitStatus.AVAILABLE,
+        latitude: 33.9348,
+        longitude: 35.6996,
+        assignedOfficerId: police.id
+      },
+      {
+        name: "Checkpoint East",
+        type: UnitType.CHECKPOINT,
+        status: UnitStatus.AVAILABLE,
+        latitude: 33.9369,
+        longitude: 35.7005,
+        assignedOfficerId: null
+      },
+      {
+        name: "Medical Team 1",
+        type: UnitType.MEDICAL,
+        status: UnitStatus.AVAILABLE,
+        latitude: 33.9339,
+        longitude: 35.6989,
+        assignedOfficerId: null
+      }
+    ]
+  });
+
+  await prisma.emergencyPlan.deleteMany({});
+  const suspiciousVehiclePlan = await prisma.emergencyPlan.create({
+    data: {
+      name: "Suspicious Vehicle",
+      type: EmergencyPlanType.SUSPICIOUS_VEHICLE,
+      severity: EmergencySeverity.HIGH,
+      description: "Rapid response protocol for suspicious vehicle activity.",
+      defaultNotificationTitle: "Suspicious Vehicle Alert",
+      defaultNotificationMessage:
+        "Proceed immediately to incident location, identify vehicle, and report status.",
+      isActive: true,
+      createdByUserId: admin.id,
+      steps: {
+        create: [
+          {
+            stepOrder: 1,
+            title: "Acknowledge alert",
+            description: "Nearest patrol confirms receipt and starts movement.",
+            icon: "🚓",
+            unitTypeRequired: UnitType.POLICE,
+            isRequired: true
+          },
+          {
+            stepOrder: 2,
+            title: "Activate checkpoint watch",
+            description: "Checkpoint unit is informed to monitor exits.",
+            icon: "🚧",
+            unitTypeRequired: UnitType.CHECKPOINT,
+            isRequired: true
+          },
+          {
+            stepOrder: 3,
+            title: "Prepare medical backup",
+            description: "Medical team is alerted in standby mode.",
+            icon: "🚑",
+            unitTypeRequired: UnitType.MEDICAL,
+            isRequired: false
+          }
+        ]
+      },
+      policePosts: {
+        create: [
+          {
+            label: "East Entrance",
+            lat: 33.9369,
+            lng: 35.7005,
+            officersCount: 2
+          }
+        ]
+      }
+    }
+  });
+
+  await prisma.emergencyPlan.create({
+    data: {
+      name: "Suspicious Person",
+      type: EmergencyPlanType.SUSPICIOUS_PERSON,
+      severity: EmergencySeverity.MEDIUM,
+      description: "Field verification and containment protocol.",
+      defaultNotificationTitle: "Suspicious Person Alert",
+      defaultNotificationMessage: "Move to location, verify identity, and report to command center.",
+      isActive: false,
+      createdByUserId: admin.id,
+      steps: {
+        create: [
+          {
+            stepOrder: 1,
+            title: "Nearest unit investigate",
+            icon: "⚠️",
+            unitTypeRequired: UnitType.POLICE,
+            isRequired: true
+          }
+        ]
+      }
+    }
+  });
+
+  await prisma.incident.update({
+    where: { id: incident.id },
+    data: {
+      emergencyPlanId: suspiciousVehiclePlan.id
+    }
+  });
+
+  const patrolAlpha = await prisma.responseUnit.findFirst({
+    where: { name: "Patrol Alpha" }
+  });
+  if (patrolAlpha) {
+    const dispatch = await prisma.incidentDispatch.create({
+      data: {
+        incidentId: incident.id,
+        unitId: patrolAlpha.id,
+        officerId: police.id,
+        status: DispatchStatus.NOTIFIED,
+        notifiedAt: new Date(),
+        notes: "Initial seeded dispatch"
+      }
+    });
+
+    await prisma.notification.create({
+      data: {
+        userId: police.id,
+        title: "🚨 Suspicious Vehicle Alert",
+        message:
+          "Plate: B 284763 | Vehicle: White Hyundai Tucson | Location: East Entrance | Action: Proceed immediately and confirm receipt.",
+        incidentId: incident.id,
+        dispatchId: dispatch.id,
+        incidentType: IncidentType.PROTECTION,
+        incidentPriority: IncidentPriority.HIGH,
+        incidentSeverity: EmergencySeverity.HIGH,
+        locationLabel: "East Entrance",
+        vehicleSummary: "White Hyundai Tucson - B 284763",
+        actionRequired: "Acknowledge and move to location",
+        emergencyPlanId: suspiciousVehiclePlan.id,
+        policePostLabel: "East Entrance",
+        targetLat: 33.9369,
+        targetLng: 35.7005
+      }
+    });
+  }
 
   await prisma.auditLog.create({
     data: {
@@ -227,6 +440,7 @@ async function main() {
   void viewer;
   void police;
   void agreement;
+  void incident;
 }
 
 main()

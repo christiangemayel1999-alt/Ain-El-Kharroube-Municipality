@@ -48,16 +48,16 @@ import { AuthService } from "../services/auth.service";
   styles: [
     `
       .login-shell {
-        min-height: 100vh;
+        min-height: 100dvh;
         display: grid;
         place-items: center;
-        padding: 1rem;
+        padding: clamp(0.75rem, 4vw, 1.5rem);
         background: linear-gradient(120deg, #dff2eb, #f9fafb);
       }
 
       mat-card {
         width: min(420px, 100%);
-        padding: 1rem;
+        padding: clamp(0.85rem, 2.2vw, 1.25rem);
       }
 
       form {
@@ -81,6 +81,7 @@ import { AuthService } from "../services/auth.service";
 
       button {
         width: 100%;
+        min-height: 44px;
       }
     `
   ]
@@ -112,9 +113,9 @@ export class LoginPageComponent {
         this.loading.set(false);
         void this.router.navigateByUrl("/dashboard");
       },
-      error: () => {
+      error: (err: { error?: { message?: string } }) => {
         this.loading.set(false);
-        this.error.set("Invalid credentials");
+        this.error.set(String(err?.error?.message ?? "Invalid credentials"));
       }
     });
   }

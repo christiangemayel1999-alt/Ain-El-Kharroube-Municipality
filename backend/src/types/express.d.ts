@@ -6,6 +6,7 @@ declare global {
       id: string;
       email: string;
       role: Role;
+      trustedDeviceId?: string | null;
     }
 
     interface Request {

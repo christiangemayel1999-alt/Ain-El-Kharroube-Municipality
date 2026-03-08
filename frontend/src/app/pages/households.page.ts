@@ -1,5 +1,6 @@
 import { CommonModule } from "@angular/common";
-import { AfterViewInit, Component, ViewChild, inject, signal } from "@angular/core";
+import { BreakpointObserver } from "@angular/cdk/layout";
+import { AfterViewInit, Component, OnDestroy, ViewChild, inject, signal } from "@angular/core";
 import { FormBuilder, ReactiveFormsModule } from "@angular/forms";
 import { MatButtonModule } from "@angular/material/button";
 import { MatCardModule } from "@angular/material/card";
@@ -8,6 +9,7 @@ import { MatPaginator, MatPaginatorModule } from "@angular/material/paginator";
 import { MatSelectModule } from "@angular/material/select";
 import { MatTableDataSource, MatTableModule } from "@angular/material/table";
 import { RouterModule } from "@angular/router";
+import { Subscription } from "rxjs";
 import { Household, HouseholdImportSummary, Zone } from "../models";
 import { ApiService } from "../services/api.service";
 import { AuthService } from "../services/auth.service";
@@ -122,7 +124,7 @@ import { AuthService } from "../services/auth.service";
 
             <ng-container matColumnDef="actions">
               <th mat-header-cell *matHeaderCellDef>Actions</th>
-              <td mat-cell *matCellDef="let row">
+              <td mat-cell *matCellDef="let row" class="action-cell">
                 <a mat-button color="primary" [routerLink]="['/households', row.id]">Open</a>
                 <button
                   mat-button
@@ -148,8 +150,8 @@ import { AuthService } from "../services/auth.service";
               </td>
             </ng-container>
 
-            <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
-            <tr mat-row *matRowDef="let row; columns: displayedColumns"></tr>
+            <tr mat-header-row *matHeaderRowDef="displayedColumns()"></tr>
+            <tr mat-row *matRowDef="let row; columns: displayedColumns()"></tr>
           </table>
         </div>
 
@@ -160,14 +162,15 @@ import { AuthService } from "../services/auth.service";
   styles: [
     `
       .shell {
-        padding: 1rem;
+        padding: var(--page-padding);
       }
 
       .filters {
-        display: flex;
-        flex-wrap: wrap;
+        display: grid;
+        grid-template-columns: 1fr;
         gap: 0.75rem;
         margin-bottom: 0.5rem;
+        align-items: start;
       }
 
       .header-row {
@@ -182,6 +185,7 @@ import { AuthService } from "../services/auth.service";
         display: flex;
         align-items: center;
         gap: 0.5rem;
+        flex-wrap: wrap;
       }
 
       .import-summary {
@@ -212,11 +216,18 @@ import { AuthService } from "../services/auth.service";
       }
 
       .table-wrap {
+        border: 1px solid #e2e8f0;
+        border-radius: 0.5rem;
         overflow-x: auto;
       }
 
       table {
         width: 100%;
+        min-width: 760px;
+      }
+
+      .action-cell {
+        white-space: nowrap;
       }
 
       .status-pending {
@@ -228,16 +239,59 @@ import { AuthService } from "../services/auth.service";
         color: #15803d;
         font-weight: 600;
       }
+
+      @media (min-width: 680px) {
+        .filters {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (min-width: 1024px) {
+        .filters {
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 767px) {
+        .table-wrap {
+          border-radius: 0.4rem;
+        }
+
+        table {
+          min-width: 620px;
+        }
+      }
     `
   ]
 })
-export class HouseholdsPageComponent implements AfterViewInit {
+export class HouseholdsPageComponent implements AfterViewInit, OnDestroy {
   private readonly api = inject(ApiService);
   private readonly auth = inject(AuthService);
   private readonly fb = inject(FormBuilder);
+  private readonly breakpointObserver = inject(BreakpointObserver);
+  private breakpointSub?: Subscription;
+  private readonly desktopColumns = [
+    "householdCode",
+    "headName",
+    "originArea",
+    "zone",
+    "familySize",
+    "status",
+    "safetyCheckStatus",
+    "actions"
+  ];
+  private readonly tabletColumns = [
+    "householdCode",
+    "headName",
+    "zone",
+    "familySize",
+    "status",
+    "actions"
+  ];
+  private readonly mobileColumns = ["householdCode", "headName", "status", "actions"];
 
   readonly zones = signal<Zone[]>([]);
-  readonly displayedColumns = ["householdCode", "headName", "originArea", "zone", "familySize", "status", "safetyCheckStatus", "actions"];
+  readonly displayedColumns = signal<string[]>(this.desktopColumns);
   readonly dataSource = new MatTableDataSource<Household>([]);
   readonly importing = signal(false);
   readonly downloadingTemplate = signal(false);
@@ -255,8 +309,25 @@ export class HouseholdsPageComponent implements AfterViewInit {
 
   ngAfterViewInit() {
     this.dataSource.paginator = this.paginator;
+    this.breakpointSub = this.breakpointObserver
+      .observe(["(max-width: 767px)", "(max-width: 1023px)"])
+      .subscribe((state) => {
+        if (state.breakpoints["(max-width: 767px)"]) {
+          this.displayedColumns.set(this.mobileColumns);
+          return;
+        }
+        if (state.breakpoints["(max-width: 1023px)"]) {
+          this.displayedColumns.set(this.tabletColumns);
+          return;
+        }
+        this.displayedColumns.set(this.desktopColumns);
+      });
     this.loadZones();
     this.loadHouseholds();
+  }
+
+  ngOnDestroy() {
+    this.breakpointSub?.unsubscribe();
   }
 
   applyFilters() {
