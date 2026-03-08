@@ -18,6 +18,8 @@ export class LiveCameraService {
   private readonly senderPeerConnections = new Map<SenderPeerKey, RTCPeerConnection>();
   private readonly viewerPeerConnections = new Map<string, RTCPeerConnection>();
   private readonly viewerTrackWaitTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly viewerReconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly viewerSessionsById = new Map<string, LiveCameraSessionRecord>();
   private rtcConfigurationPromise: Promise<RTCConfiguration> | null = null;
 
   private senderSocket: WebSocket | null = null;
@@ -243,6 +245,11 @@ export class LiveCameraService {
       peer.close();
     }
     this.viewerPeerConnections.clear();
+    for (const timer of this.viewerReconnectTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.viewerReconnectTimers.clear();
+    this.viewerSessionsById.clear();
     this.viewerStreams.set({});
     this.viewerSessionState.set({});
     this.viewerErrors.set({});
@@ -264,6 +271,8 @@ export class LiveCameraService {
   }
 
   async syncViewerSessions(sessions: LiveCameraSessionRecord[]) {
+    this.viewerSessionsById.clear();
+
     if (!sessions.length) {
       for (const sessionId of this.viewerPeerConnections.keys()) {
         this.removeViewerPeer(sessionId);
@@ -283,6 +292,7 @@ export class LiveCameraService {
     }
 
     for (const session of sessions) {
+      this.viewerSessionsById.set(session.id, session);
       const currentState = this.viewerSessionState()[session.id];
       if (currentState !== session.sessionStatus) {
         this.viewerSessionState.update((state) => ({
@@ -384,6 +394,8 @@ export class LiveCameraService {
           ...rows,
           [session.id]: "ICE connection failed. TURN relay is likely required for this network."
         }));
+        this.removeViewerPeer(session.id);
+        this.scheduleViewerReconnect(session.id, 1_500);
         return;
       }
 
@@ -399,8 +411,10 @@ export class LiveCameraService {
       if (peer.connectionState === "failed" || peer.connectionState === "disconnected") {
         this.viewerErrors.update((rows) => ({
           ...rows,
-          [session.id]: "Connection lost. Waiting for stream reconnect."
+          [session.id]: "Connection lost. Reconnecting stream..."
         }));
+        this.removeViewerPeer(session.id);
+        this.scheduleViewerReconnect(session.id, 1_500);
       }
     };
 
@@ -440,6 +454,7 @@ export class LiveCameraService {
       this.viewerPeerConnections.delete(sessionId);
     }
     this.clearViewerTrackWaitTimer(sessionId);
+    this.clearViewerReconnectTimer(sessionId);
 
     this.viewerStreams.update((rows) => {
       const next = { ...rows };
@@ -458,6 +473,47 @@ export class LiveCameraService {
       delete next[sessionId];
       return next;
     });
+  }
+
+  private scheduleViewerReconnect(sessionId: string, delayMs = 1_500) {
+    if (this.viewerReconnectTimers.has(sessionId)) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      this.viewerReconnectTimers.delete(sessionId);
+      const session = this.viewerSessionsById.get(sessionId);
+      if (!session) {
+        return;
+      }
+
+      if (!session.isActive || session.sessionStatus === "OFFLINE" || TERMINAL_STATES.has(session.sessionStatus)) {
+        return;
+      }
+
+      if (this.viewerPeerConnections.has(sessionId)) {
+        return;
+      }
+
+      void this.ensureViewerSocket()
+        .then(() => this.openViewerPeer(session))
+        .catch(() => {
+          this.viewerErrors.update((rows) => ({
+            ...rows,
+            [sessionId]: "Reconnect failed. Check TURN relay settings and sender network."
+          }));
+        });
+    }, delayMs);
+
+    this.viewerReconnectTimers.set(sessionId, timer);
+  }
+
+  private clearViewerReconnectTimer(sessionId: string) {
+    const timer = this.viewerReconnectTimers.get(sessionId);
+    if (timer) {
+      clearTimeout(timer);
+      this.viewerReconnectTimers.delete(sessionId);
+    }
   }
 
   private async ensureSenderSocket() {
@@ -765,6 +821,8 @@ export class LiveCameraService {
       }));
 
       if (!isActive || TERMINAL_STATES.has(sessionStatus)) {
+        this.viewerSessionsById.delete(sessionId);
+        this.clearViewerReconnectTimer(sessionId);
         this.removeViewerPeer(sessionId);
       }
       return;
@@ -775,6 +833,8 @@ export class LiveCameraService {
       if (!sessionId) {
         return;
       }
+      this.viewerSessionsById.delete(sessionId);
+      this.clearViewerReconnectTimer(sessionId);
       this.removeViewerPeer(sessionId);
       return;
     }
