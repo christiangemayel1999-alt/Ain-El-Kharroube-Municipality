@@ -1,4 +1,49 @@
 export type Role = "ADMIN" | "CASE_WORKER" | "FINANCE" | "VIEWER" | "POLICE";
+export type LiveCameraSessionStatus =
+  | "CONNECTING"
+  | "LIVE"
+  | "PERMISSION_DENIED"
+  | "CAMERA_OFF"
+  | "NETWORK_WEAK"
+  | "ENDED"
+  | "FAILED"
+  | "OFFLINE";
+export type LiveCameraEventType =
+  | "CAMERA_SESSION_STARTED"
+  | "CAMERA_SESSION_STOPPED"
+  | "CAMERA_PERMISSION_DENIED"
+  | "CAMERA_STREAM_ENDED_UNEXPECTEDLY"
+  | "VIEWER_OPENED_STREAM"
+  | "VIEWER_SWITCHED_STREAM"
+  | "STREAM_SELECTED_IN_CONTROL_ROOM"
+  | "TRUSTED_DEVICE_MISMATCH_BLOCKED_CAMERA_START"
+  | "CAMERA_STATE_UPDATED";
+export type TrackingPingStatus = "PENDING" | "OPENED" | "RESPONDED" | "EXPIRED" | "FAILED" | "CANCELLED";
+export type TrackingHealthState = "ACTIVE" | "STALE" | "OFFLINE" | "NOT_ENABLED";
+export type IncidentLocationSource = "GPS_FRESH" | "GPS_RECENT" | "MANUAL" | "LIVE_TRACKING_RECENT";
+export type TrackingEventType =
+  | "TRUSTED_DEVICE_ASSIGNED"
+  | "TRUSTED_DEVICE_RESET"
+  | "LIVE_TRACKING_STARTED"
+  | "LIVE_TRACKING_STOPPED"
+  | "LIVE_TRACKING_UPDATE_RECEIVED"
+  | "LIVE_TRACKING_BECAME_STALE"
+  | "PING_REQUESTED"
+  | "PING_NOTIFICATION_DELIVERED"
+  | "PING_OPENED"
+  | "PING_LOCATION_RESPONDED"
+  | "PING_EXPIRED"
+  | "PING_CANCELLED"
+  | "PING_FAILED"
+  | "GEOLOCATION_PERMISSION_DENIED"
+  | "GEOLOCATION_UNAVAILABLE"
+  | "USER_HIDDEN_FROM_MAP"
+  | "TRACKING_SENDER_DISABLED"
+  | "UNAUTHORIZED_TRACKING_ACTION_ATTEMPT"
+  | "STOP_ACTIVE_TRACKING_SESSION"
+  | "PUSH_SUBSCRIPTION_REGISTERED"
+  | "PUSH_SUBSCRIPTION_REMOVED"
+  | "PUSH_NOTIFICATION_FAILED";
 
 export type IncidentStatus =
   | "DRAFT"
@@ -56,6 +101,8 @@ export interface User {
   isActive?: boolean;
   liveLocationEnabled?: boolean;
   liveLocationVisible?: boolean;
+  canSendLiveCamera?: boolean;
+  visibleInControlRoom?: boolean;
   trustedDeviceAssigned?: boolean;
   trustedDeviceLastSeenAt?: string | null;
 }
@@ -98,6 +145,11 @@ export interface LivePersonLocation {
   batteryLevel: number | null;
   isTrackingActive: boolean;
   isStale: boolean;
+  freshnessSeconds?: number | null;
+  lastPingStatus?: TrackingPingStatus | null;
+  lastPingRequestedAt?: string | null;
+  lastPingRespondedAt?: string | null;
+  recentlyPinged?: boolean;
 }
 
 export interface LocationHistoryPoint {
@@ -392,6 +444,7 @@ export interface IncidentRecord {
   locationLat: number | null;
   locationLng: number | null;
   locationAccuracyM: number | null;
+  locationSource: IncidentLocationSource | null;
   status: IncidentStatus;
   dueDate: string | null;
   activatedAt: string | null;
@@ -433,6 +486,282 @@ export interface NotificationItem {
   } | null;
   readAt?: string | null;
   createdAt: string;
+}
+
+export interface TrackingPingRequest {
+  id: string;
+  targetUserId: string;
+  requestedByUserId: string;
+  status: TrackingPingStatus;
+  requestMessage: string | null;
+  createdAt: string;
+  expiresAt: string;
+  openedAt: string | null;
+  respondedAt: string | null;
+  cancelledAt?: string | null;
+  lastError?: string | null;
+  isLateResponse?: boolean;
+  notificationDeliveredAt?: string | null;
+  responseTimeSeconds?: number | null;
+  requestedBy?: {
+    id: string;
+    fullName: string;
+    role: Role;
+  } | null;
+  targetUser?: {
+    id: string;
+    fullName: string;
+    role: Role;
+  } | null;
+  locationPoint?: {
+    id: string;
+    latitude: number;
+    longitude: number;
+    accuracyM: number;
+    recordedAt: string;
+    receivedAt: string;
+  } | null;
+}
+
+export interface TrackingOverviewUser {
+  userId: string;
+  name: string;
+  email: string;
+  role: Role;
+  accountStatus: "ACTIVE" | "DISABLED";
+  trustedDeviceAssigned: boolean;
+  trustedDevice: TrustedDeviceSummary | null;
+  liveTrackingSenderEnabled: boolean;
+  visibleOnLiveMap: boolean;
+  currentlySharing: boolean;
+  lastKnownLocationTime: string | null;
+  lastKnownLocation: {
+    latitude: number | null;
+    longitude: number | null;
+    accuracyM: number | null;
+    source: LocationUpdateSource | null;
+  };
+  lastPingStatus: TrackingPingStatus | null;
+  lastPingRequestedAt: string | null;
+  lastPingRespondedAt: string | null;
+  lastSeenOnlineAt: string | null;
+  trackingHealthState: TrackingHealthState;
+}
+
+export interface TrackingOverviewResponse {
+  generatedAt: string;
+  staleAfterSeconds: number;
+  offlineAfterSeconds: number;
+  users: TrackingOverviewUser[];
+}
+
+export interface TrackingLogRow {
+  id: string;
+  timestamp: string;
+  user: {
+    id: string;
+    fullName: string;
+    role: Role;
+  };
+  actor: {
+    id: string;
+    fullName: string;
+    role: Role;
+  } | null;
+  eventType: TrackingEventType;
+  summary: string | null;
+  metadata: Record<string, unknown> | null;
+  relatedPingRequest: {
+    id: string;
+    status: TrackingPingStatus;
+    createdAt: string;
+    openedAt: string | null;
+    respondedAt: string | null;
+    expiresAt: string;
+    isLateResponse: boolean;
+    locationPoint: {
+      id: string;
+      latitude: number;
+      longitude: number;
+      accuracyM: number;
+      recordedAt: string;
+      receivedAt: string;
+    } | null;
+  } | null;
+  relatedSessionId: string | null;
+  relatedTrustedDeviceId: string | null;
+  coordinates: {
+    latitude: number;
+    longitude: number;
+    accuracyM: number;
+  } | null;
+}
+
+export interface TrackingLogsResponse {
+  page: number;
+  pageSize: number;
+  total: number;
+  items: TrackingLogRow[];
+}
+
+export interface LiveCameraSessionRecord {
+  id: string;
+  userId: string;
+  startedAt: string;
+  endedAt: string | null;
+  isActive: boolean;
+  sessionStatus: LiveCameraSessionStatus;
+  rawSessionStatus?: LiveCameraSessionStatus | null;
+  relatedLocationPointId?: string | null;
+  deviceLabel?: string | null;
+  userAgent?: string | null;
+  metadata?: Record<string, unknown> | null;
+  microphoneEnabled?: boolean | null;
+  emergency?: boolean;
+  location?: {
+    latitude: number | null;
+    longitude: number | null;
+    accuracyM: number | null;
+    lastRecordedAt?: string | null;
+    lastReceivedAt: string | null;
+    isTrackingActive: boolean;
+    freshnessSeconds: number | null;
+  } | null;
+  user: {
+    id: string;
+    fullName: string;
+    role: Role;
+    canSendLiveCamera: boolean;
+    visibleInControlRoom: boolean;
+  };
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LiveCameraLogRow {
+  id: string;
+  userId: string;
+  actorUserId: string | null;
+  eventType: LiveCameraEventType;
+  eventSummary: string | null;
+  metadata: Record<string, unknown> | null;
+  liveCameraSessionId: string | null;
+  createdAt: string;
+  user: {
+    id: string;
+    fullName: string;
+    role: Role;
+  };
+  actorUser: {
+    id: string;
+    fullName: string;
+    role: Role;
+  } | null;
+  liveCameraSession: {
+    id: string;
+    startedAt: string;
+    endedAt: string | null;
+    isActive: boolean;
+    sessionStatus: LiveCameraSessionStatus;
+  } | null;
+}
+
+export interface LiveCameraLogsResponse {
+  page: number;
+  pageSize: number;
+  total: number;
+  items: LiveCameraLogRow[];
+}
+
+export interface ControlRoomUserRow {
+  userId: string;
+  name: string;
+  email: string;
+  role: Role;
+  canSendLiveCamera: boolean;
+  visibleInControlRoom: boolean;
+  liveTrackingEnabled: boolean;
+  liveTrackingVisible: boolean;
+  liveTrackingActive: boolean;
+  liveCameraActive: boolean;
+  cameraStatus: LiveCameraSessionStatus;
+  microphoneEnabled: boolean | null;
+  trustedDeviceAssigned: boolean;
+  trustedDevice: {
+    id: string;
+    isActive: boolean;
+    deviceLabel: string | null;
+    platform: string | null;
+    lastSeenAt: string;
+  } | null;
+  lastGpsUpdate: string | null;
+  lastKnownLocation: {
+    latitude: number | null;
+    longitude: number | null;
+    accuracyM: number | null;
+    source: LocationUpdateSource | null;
+  };
+  trackingHealthState: TrackingHealthState;
+  activeCameraSessionId: string | null;
+  lastCameraSessionAt: string | null;
+  lastCameraEndedAt: string | null;
+}
+
+export interface ControlRoomMapUser {
+  userId: string;
+  fullName: string;
+  role: Role;
+  latitude: number;
+  longitude: number;
+  accuracyM: number | null;
+  isTrackingActive: boolean;
+  trackingHealthState: TrackingHealthState;
+  lastGpsUpdate: string | null;
+  freshnessSeconds: number | null;
+  hasActiveCamera: boolean;
+  activeCameraSessionId: string | null;
+  cameraStatus: LiveCameraSessionStatus;
+  lastCameraSessionAt: string | null;
+  lastCameraEndedAt: string | null;
+}
+
+export interface ControlRoomOverviewResponse {
+  generatedAt: string;
+  summary: {
+    totalTrackedUsers: number;
+    totalLiveCameraUsers: number;
+    emergencyStreamsCount: number;
+    staleOrOfflineUsersCount: number;
+    activeIncidentsCount: number;
+  };
+  incidentMarkers: Array<{
+    id: string;
+    incidentCode: string;
+    title: string | null;
+    type: "MEDICAL" | "HOUSING" | "UTILITY" | "PROTECTION" | "OTHER";
+    priority: "LOW" | "MEDIUM" | "HIGH";
+    severity: EmergencySeverity;
+    status: IncidentStatus;
+    locationLabel: string | null;
+    locationLat: number;
+    locationLng: number;
+  }>;
+  mapUsers: ControlRoomMapUser[];
+  cameraSessions: LiveCameraSessionRecord[];
+  users: ControlRoomUserRow[];
+}
+
+export interface PushPublicKeyResponse {
+  enabled: boolean;
+  publicKey: string | null;
+}
+
+export interface PushSubscriptionRecord {
+  id: string;
+  endpoint: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface DashboardSummary {

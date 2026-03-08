@@ -26,6 +26,62 @@ enum LocationSessionSource {
   SHARE_TOKEN
 }
 
+enum TrackingPingStatus {
+  PENDING
+  OPENED
+  RESPONDED
+  EXPIRED
+  FAILED
+  CANCELLED
+}
+
+enum TrackingEventType {
+  TRUSTED_DEVICE_ASSIGNED
+  TRUSTED_DEVICE_RESET
+  LIVE_TRACKING_STARTED
+  LIVE_TRACKING_STOPPED
+  LIVE_TRACKING_UPDATE_RECEIVED
+  LIVE_TRACKING_BECAME_STALE
+  PING_REQUESTED
+  PING_NOTIFICATION_DELIVERED
+  PING_OPENED
+  PING_LOCATION_RESPONDED
+  PING_EXPIRED
+  PING_CANCELLED
+  PING_FAILED
+  GEOLOCATION_PERMISSION_DENIED
+  GEOLOCATION_UNAVAILABLE
+  USER_HIDDEN_FROM_MAP
+  TRACKING_SENDER_DISABLED
+  UNAUTHORIZED_TRACKING_ACTION_ATTEMPT
+  STOP_ACTIVE_TRACKING_SESSION
+  PUSH_SUBSCRIPTION_REGISTERED
+  PUSH_SUBSCRIPTION_REMOVED
+  PUSH_NOTIFICATION_FAILED
+}
+
+enum LiveCameraSessionStatus {
+  CONNECTING
+  LIVE
+  PERMISSION_DENIED
+  CAMERA_OFF
+  NETWORK_WEAK
+  ENDED
+  FAILED
+}
+
+enum LiveCameraEventType {
+  CAMERA_SESSION_STARTED
+  CAMERA_SESSION_STOPPED
+  CAMERA_PERMISSION_DENIED
+  CAMERA_STREAM_ENDED_UNEXPECTEDLY
+  VIEWER_OPENED_STREAM
+  VIEWER_SWITCHED_STREAM
+  STREAM_SELECTED_IN_CONTROL_ROOM
+  TRUSTED_DEVICE_MISMATCH_BLOCKED_CAMERA_START
+  CAMERA_STATE_UPDATED
+}
+
 enum HousingType {
   RENTAL
   HOST
@@ -87,6 +143,13 @@ enum IncidentStatus {
   // Legacy values kept for backward compatibility with old records.
   OPEN
   IN_PROGRESS
+}
+
+enum IncidentLocationSource {
+  GPS_FRESH
+  GPS_RECENT
+  MANUAL
+  LIVE_TRACKING_RECENT
 }
 
 enum EmergencyPlanType {
@@ -157,36 +220,46 @@ enum MapReferenceType {
 }
 
 model User {
-  id           String      @id @default(uuid())
-  email        String      @unique
-  passwordHash String
-  fullName     String
-  role         Role
-  isActive     Boolean     @default(true)
-  liveLocationEnabled Boolean @default(false)
-  liveLocationVisible Boolean @default(false)
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
+  id                  String   @id @default(uuid())
+  email               String   @unique
+  passwordHash        String
+  fullName            String
+  role                Role
+  isActive            Boolean  @default(true)
+  liveLocationEnabled Boolean  @default(false)
+  liveLocationVisible Boolean  @default(false)
+  canSendLiveCamera   Boolean  @default(false)
+  visibleInControlRoom Boolean @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
-  incidentsAssigned Incident[] @relation("IncidentAssignedUser")
-  dispatches        IncidentDispatch[] @relation("IncidentDispatchOfficer")
-  assignedUnits     ResponseUnit[] @relation("ResponseUnitAssignedOfficer")
-  timelineEvents    IncidentTimeline[] @relation("IncidentTimelineCreatedBy")
-  auditLogs         AuditLog[]
-  emergencyPlans    EmergencyPlan[] @relation("EmergencyPlanCreatedBy")
-  notifications     Notification[]
-  trustedDevice     UserTrustedDevice? @relation("UserTrustedDeviceForUser")
-  trustedDeviceResets UserTrustedDevice[] @relation("UserTrustedDeviceResetBy")
-  liveLocationState LiveLocationState?
-  liveLocationPoints LocationPoint[]
-  locationSharingSessions LocationSharingSession[]
-  locationShareTokens LocationShareToken[] @relation("LocationShareTokenForUser")
-  createdLocationShareTokens LocationShareToken[] @relation("LocationShareTokenCreatedBy")
+  incidentsAssigned             Incident[]               @relation("IncidentAssignedUser")
+  dispatches                    IncidentDispatch[]       @relation("IncidentDispatchOfficer")
+  assignedUnits                 ResponseUnit[]           @relation("ResponseUnitAssignedOfficer")
+  timelineEvents                IncidentTimeline[]       @relation("IncidentTimelineCreatedBy")
+  auditLogs                     AuditLog[]
+  emergencyPlans                EmergencyPlan[]          @relation("EmergencyPlanCreatedBy")
+  notifications                 Notification[]
+  trustedDevice                 UserTrustedDevice?       @relation("UserTrustedDeviceForUser")
+  trustedDeviceResets           UserTrustedDevice[]      @relation("UserTrustedDeviceResetBy")
+  liveLocationState             LiveLocationState?
+  liveLocationPoints            LocationPoint[]
+  locationSharingSessions       LocationSharingSession[]
+  locationShareTokens           LocationShareToken[]     @relation("LocationShareTokenForUser")
+  createdLocationShareTokens    LocationShareToken[]     @relation("LocationShareTokenCreatedBy")
+  trackingPingRequestsReceived  LocationPingRequest[]    @relation("LocationPingTargetUser")
+  trackingPingRequestsRequested LocationPingRequest[]    @relation("LocationPingRequestedByUser")
+  trackingEventLogs             TrackingEventLog[]       @relation("TrackingEventLogUser")
+  trackingEventActorLogs        TrackingEventLog[]       @relation("TrackingEventLogActor")
+  pushSubscriptions             PushSubscription[]
+  liveCameraSessions            LiveCameraSession[]      @relation("LiveCameraSessionUser")
+  liveCameraEventsSubject       LiveCameraEventLog[]     @relation("LiveCameraEventLogUser")
+  liveCameraEventsActor         LiveCameraEventLog[]     @relation("LiveCameraEventLogActor")
 }
 
 model UserTrustedDevice {
-  id               String   @id @default(uuid())
-  userId           String   @unique
+  id               String    @id @default(uuid())
+  userId           String    @unique
   persistentIdHash String
   fingerprintHash  String
   deviceLabel      String?
@@ -195,25 +268,26 @@ model UserTrustedDevice {
   browserLanguage  String?
   timezone         String?
   screen           String?
-  firstTrustedAt   DateTime @default(now())
-  lastSeenAt       DateTime @default(now())
+  firstTrustedAt   DateTime  @default(now())
+  lastSeenAt       DateTime  @default(now())
   resetAt          DateTime?
   resetByUserId    String?
-  isActive         Boolean  @default(true)
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  isActive         Boolean   @default(true)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  user      User                   @relation("UserTrustedDeviceForUser", fields: [userId], references: [id], onDelete: Cascade)
-  resetBy   User?                  @relation("UserTrustedDeviceResetBy", fields: [resetByUserId], references: [id], onDelete: SetNull)
-  sessions  LocationSharingSession[]
+  user           User                     @relation("UserTrustedDeviceForUser", fields: [userId], references: [id], onDelete: Cascade)
+  resetBy        User?                    @relation("UserTrustedDeviceResetBy", fields: [resetByUserId], references: [id], onDelete: SetNull)
+  sessions       LocationSharingSession[]
+  trackingEvents TrackingEventLog[]
 
   @@index([isActive, lastSeenAt])
   @@index([persistentIdHash])
 }
 
 model LiveLocationState {
-  userId           String   @id
-  isSharing        Boolean  @default(false)
+  userId           String                @id
+  isSharing        Boolean               @default(false)
   lastLatitude     Float?
   lastLongitude    Float?
   lastAccuracyM    Float?
@@ -222,9 +296,9 @@ model LiveLocationState {
   lastSource       LocationUpdateSource?
   lastBatteryLevel Int?
   lastPointId      String?
-  updatedAt        DateTime @updatedAt
+  updatedAt        DateTime              @updatedAt
 
-  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   lastPoint LocationPoint? @relation("LastLiveLocationPoint", fields: [lastPointId], references: [id], onDelete: SetNull)
 
   @@index([isSharing, lastReceivedAt])
@@ -232,22 +306,23 @@ model LiveLocationState {
 }
 
 model LocationSharingSession {
-  id            String                @id @default(uuid())
-  userId        String
-  source        LocationSessionSource
-  startedAt     DateTime              @default(now())
-  stoppedAt     DateTime?
-  isActive      Boolean               @default(true)
-  stoppedReason String?
-  tokenId       String?
+  id              String                @id @default(uuid())
+  userId          String
+  source          LocationSessionSource
+  startedAt       DateTime              @default(now())
+  stoppedAt       DateTime?
+  isActive        Boolean               @default(true)
+  stoppedReason   String?
+  tokenId         String?
   trustedDeviceId String?
-  createdAt     DateTime              @default(now())
-  updatedAt     DateTime              @updatedAt
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
 
-  user   User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  token  LocationShareToken? @relation(fields: [tokenId], references: [id], onDelete: SetNull)
-  trustedDevice UserTrustedDevice? @relation(fields: [trustedDeviceId], references: [id], onDelete: SetNull)
-  points LocationPoint[]
+  user           User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token          LocationShareToken? @relation(fields: [tokenId], references: [id], onDelete: SetNull)
+  trustedDevice  UserTrustedDevice?  @relation(fields: [trustedDeviceId], references: [id], onDelete: SetNull)
+  points         LocationPoint[]
+  trackingEvents TrackingEventLog[]
 
   @@index([userId, isActive])
   @@index([startedAt])
@@ -266,8 +341,8 @@ model LocationShareToken {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
-  user      User                   @relation("LocationShareTokenForUser", fields: [userId], references: [id], onDelete: Cascade)
-  createdBy User?                  @relation("LocationShareTokenCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  user      User                     @relation("LocationShareTokenForUser", fields: [userId], references: [id], onDelete: Cascade)
+  createdBy User?                    @relation("LocationShareTokenCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   sessions  LocationSharingSession[]
   points    LocationPoint[]
 
@@ -291,10 +366,12 @@ model LocationPoint {
   isSharingSnapshot Boolean              @default(true)
   createdAt         DateTime             @default(now())
 
-  user               User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user               User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
   session            LocationSharingSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
   token              LocationShareToken?     @relation(fields: [tokenId], references: [id], onDelete: SetNull)
   liveLocationStates LiveLocationState[]     @relation("LastLiveLocationPoint")
+  pingRequests       LocationPingRequest[]
+  cameraSessions     LiveCameraSession[]
 
   @@index([userId, receivedAt])
   @@index([userId, recordedAt])
@@ -302,61 +379,178 @@ model LocationPoint {
   @@index([sessionId, receivedAt])
 }
 
-model Zone {
-  id        String      @id @default(uuid())
-  code      String      @unique
-  name      String
-  createdAt DateTime    @default(now())
-  updatedAt DateTime    @updatedAt
+model LocationPingRequest {
+  id                      String             @id @default(uuid())
+  targetUserId            String
+  requestedByUserId       String
+  status                  TrackingPingStatus @default(PENDING)
+  requestMessage          String?
+  createdAt               DateTime           @default(now())
+  updatedAt               DateTime           @updatedAt
+  expiresAt               DateTime
+  openedAt                DateTime?
+  respondedAt             DateTime?
+  cancelledAt             DateTime?
+  lastError               String?
+  locationPointId         String?
+  isLateResponse          Boolean            @default(false)
+  notificationDeliveredAt DateTime?
 
-  households  Household[]
+  targetUser     User               @relation("LocationPingTargetUser", fields: [targetUserId], references: [id], onDelete: Cascade)
+  requestedBy    User               @relation("LocationPingRequestedByUser", fields: [requestedByUserId], references: [id], onDelete: Restrict)
+  locationPoint  LocationPoint?     @relation(fields: [locationPointId], references: [id], onDelete: SetNull)
+  trackingEvents TrackingEventLog[] @relation("TrackingEventPingRequest")
+
+  @@index([targetUserId, createdAt])
+  @@index([requestedByUserId, createdAt])
+  @@index([status, expiresAt])
+  @@index([createdAt])
+}
+
+model TrackingEventLog {
+  id                     String            @id @default(uuid())
+  userId                 String
+  actorUserId            String?
+  eventType              TrackingEventType
+  eventSummary           String?
+  metadata               Json?
+  createdAt              DateTime          @default(now())
+  relatedPingRequestId   String?
+  relatedSessionId       String?
+  relatedTrustedDeviceId String?
+
+  user                 User                    @relation("TrackingEventLogUser", fields: [userId], references: [id], onDelete: Cascade)
+  actorUser            User?                   @relation("TrackingEventLogActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  relatedPingRequest   LocationPingRequest?    @relation("TrackingEventPingRequest", fields: [relatedPingRequestId], references: [id], onDelete: SetNull)
+  relatedSession       LocationSharingSession? @relation(fields: [relatedSessionId], references: [id], onDelete: SetNull)
+  relatedTrustedDevice UserTrustedDevice?      @relation(fields: [relatedTrustedDeviceId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([eventType, createdAt])
+  @@index([relatedPingRequestId])
+}
+
+model PushSubscription {
+  id                String    @id @default(uuid())
+  userId            String
+  endpoint          String    @unique
+  p256dh            String
+  auth              String
+  expirationTime    DateTime?
+  userAgent         String?
+  isActive          Boolean   @default(true)
+  lastSuccessAt     DateTime?
+  lastFailureAt     DateTime?
+  lastFailureReason String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isActive])
+  @@index([createdAt])
+}
+
+model LiveCameraSession {
+  id                    String                  @id @default(uuid())
+  userId                String
+  startedAt             DateTime                @default(now())
+  endedAt               DateTime?
+  isActive              Boolean                 @default(true)
+  sessionStatus         LiveCameraSessionStatus @default(CONNECTING)
+  relatedLocationPointId String?
+  deviceLabel           String?
+  userAgent             String?
+  metadata              Json?
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
+
+  user                 User            @relation("LiveCameraSessionUser", fields: [userId], references: [id], onDelete: Cascade)
+  relatedLocationPoint LocationPoint?  @relation(fields: [relatedLocationPointId], references: [id], onDelete: SetNull)
+  eventLogs            LiveCameraEventLog[]
+
+  @@index([userId, isActive])
+  @@index([sessionStatus, createdAt])
+  @@index([createdAt])
+  @@index([relatedLocationPointId])
+}
+
+model LiveCameraEventLog {
+  id                 String              @id @default(uuid())
+  userId             String
+  actorUserId        String?
+  eventType          LiveCameraEventType
+  eventSummary       String?
+  metadata           Json?
+  liveCameraSessionId String?
+  createdAt          DateTime            @default(now())
+
+  user              User               @relation("LiveCameraEventLogUser", fields: [userId], references: [id], onDelete: Cascade)
+  actorUser         User?              @relation("LiveCameraEventLogActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  liveCameraSession LiveCameraSession? @relation(fields: [liveCameraSessionId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([eventType, createdAt])
+  @@index([liveCameraSessionId])
+}
+
+model Zone {
+  id        String   @id @default(uuid())
+  code      String   @unique
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  households   Household[]
   housingUnits HousingUnit[]
 }
 
 model Household {
-  id                 String          @id @default(uuid())
-  householdCode      String          @unique
-  firstName          String?
-  lastName           String?
-  fatherName         String?
-  motherName         String?
-  civilIdentityNumber String?        @unique
-  phoneNumber        String?
-  pinLabel           String?
-  headName           String?
-  arrivalDate        DateTime
-  originArea         String?
-  zoneId             String
-  housingType        HousingType
-  familySize         Int
-  status             HouseholdStatus
-  age0_4             Int             @default(0)
-  age5_17            Int             @default(0)
-  age18_59           Int             @default(0)
-  age60plus          Int             @default(0)
-  vulnerabilityFlags Json            @default("[]")
-  needs              Json            @default("[]")
-  notes              String?
-  members            Json            @default("[]")
-  safetyCheckStatus  FamilyCheckStatus @default(PENDING)
-  casePriority       CasePriority      @default(MEDIUM)
-  nationality        String?
-  preferredLanguage  String?
-  emergencyName      String?
-  emergencyPhone     String?
-  emergencyRelation  String?
-  checkedByUserId    String?
-  checkedAt          DateTime?
-  hasCar             Boolean         @default(false)
-  carModel           String?
-  carColor           String?
-  carPlate           String?
-  isVerified         Boolean         @default(false)
-  approxLat          Float?
-  approxLng          Float?
-  pinPrecisionM      Int             @default(500)
-  createdAt          DateTime        @default(now())
-  updatedAt          DateTime        @updatedAt
+  id                  String            @id @default(uuid())
+  householdCode       String            @unique
+  firstName           String?
+  lastName            String?
+  fatherName          String?
+  motherName          String?
+  civilIdentityNumber String?           @unique
+  phoneNumber         String?
+  pinLabel            String?
+  headName            String?
+  arrivalDate         DateTime
+  originArea          String?
+  zoneId              String
+  housingType         HousingType
+  familySize          Int
+  status              HouseholdStatus
+  age0_4              Int               @default(0)
+  age5_17             Int               @default(0)
+  age18_59            Int               @default(0)
+  age60plus           Int               @default(0)
+  vulnerabilityFlags  Json              @default("[]")
+  needs               Json              @default("[]")
+  notes               String?
+  members             Json              @default("[]")
+  safetyCheckStatus   FamilyCheckStatus @default(PENDING)
+  casePriority        CasePriority      @default(MEDIUM)
+  nationality         String?
+  preferredLanguage   String?
+  emergencyName       String?
+  emergencyPhone      String?
+  emergencyRelation   String?
+  checkedByUserId     String?
+  checkedAt           DateTime?
+  hasCar              Boolean           @default(false)
+  carModel            String?
+  carColor            String?
+  carPlate            String?
+  isVerified          Boolean           @default(false)
+  approxLat           Float?
+  approxLng           Float?
+  pinPrecisionM       Int               @default(500)
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
 
   zone             Zone              @relation(fields: [zoneId], references: [id], onDelete: Restrict)
   contact          HouseholdContact?
@@ -365,13 +559,13 @@ model Household {
 }
 
 model HouseholdContact {
-  id          String    @id @default(uuid())
-  householdId String    @unique
+  id          String   @id @default(uuid())
+  householdId String   @unique
   phone       String?
   whatsapp    String?
-  consent     Boolean   @default(false)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  consent     Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
 }
@@ -396,67 +590,68 @@ model HousingUnit {
 }
 
 model Landlord {
-  id        String    @id @default(uuid())
+  id        String   @id @default(uuid())
   name      String
   phone     String?
   notes     String?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   rentalAgreements RentalAgreement[]
 }
 
 model RentalAgreement {
-  id             String                @id @default(uuid())
-  agreementCode  String                @unique
-  householdId    String
-  housingUnitId  String
-  landlordId     String
-  startDate      DateTime
-  endDate        DateTime?
-  monthlyRent    Decimal               @db.Decimal(10, 2)
-  deposit        Decimal?              @db.Decimal(10, 2)
-  status         RentalAgreementStatus
-  notes          String?
-  createdAt      DateTime              @default(now())
-  updatedAt      DateTime              @updatedAt
+  id            String                @id @default(uuid())
+  agreementCode String                @unique
+  householdId   String
+  housingUnitId String
+  landlordId    String
+  startDate     DateTime
+  endDate       DateTime?
+  monthlyRent   Decimal               @db.Decimal(10, 2)
+  deposit       Decimal?              @db.Decimal(10, 2)
+  status        RentalAgreementStatus
+  notes         String?
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
 
-  household  Household @relation(fields: [householdId], references: [id], onDelete: Restrict)
+  household   Household   @relation(fields: [householdId], references: [id], onDelete: Restrict)
   housingUnit HousingUnit @relation(fields: [housingUnitId], references: [id], onDelete: Restrict)
-  landlord   Landlord @relation(fields: [landlordId], references: [id], onDelete: Restrict)
+  landlord    Landlord    @relation(fields: [landlordId], references: [id], onDelete: Restrict)
 }
 
 model Incident {
-  id              String           @id @default(uuid())
-  incidentCode    String           @unique
-  title           String?
-  householdId     String?
-  type            IncidentType
-  priority        IncidentPriority
-  severity        EmergencySeverity @default(MEDIUM)
-  description     String
-  assignedUserId  String?
-  emergencyPlanId String?
-  locationLabel   String?
-  locationLat     Float?
-  locationLng     Float?
+  id                String                  @id @default(uuid())
+  incidentCode      String                  @unique
+  title             String?
+  householdId       String?
+  type              IncidentType
+  priority          IncidentPriority
+  severity          EmergencySeverity       @default(MEDIUM)
+  description       String
+  assignedUserId    String?
+  emergencyPlanId   String?
+  locationLabel     String?
+  locationLat       Float?
+  locationLng       Float?
   locationAccuracyM Float?
-  status          IncidentStatus
-  dueDate         DateTime?
-  activatedAt     DateTime?
-  resolvedAt      DateTime?
-  closedAt        DateTime?
-  resolutionNotes String?
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
+  locationSource    IncidentLocationSource?
+  status            IncidentStatus
+  dueDate           DateTime?
+  activatedAt       DateTime?
+  resolvedAt        DateTime?
+  closedAt          DateTime?
+  resolutionNotes   String?
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
 
-  household      Household? @relation(fields: [householdId], references: [id], onDelete: SetNull)
-  assignedUser   User?      @relation("IncidentAssignedUser", fields: [assignedUserId], references: [id], onDelete: SetNull)
-  emergencyPlan  EmergencyPlan? @relation("IncidentEmergencyPlan", fields: [emergencyPlanId], references: [id], onDelete: SetNull)
-  vehicle        IncidentVehicle?
-  dispatches     IncidentDispatch[]
-  timeline       IncidentTimeline[]
-  notifications  Notification[]
+  household     Household?         @relation(fields: [householdId], references: [id], onDelete: SetNull)
+  assignedUser  User?              @relation("IncidentAssignedUser", fields: [assignedUserId], references: [id], onDelete: SetNull)
+  emergencyPlan EmergencyPlan?     @relation("IncidentEmergencyPlan", fields: [emergencyPlanId], references: [id], onDelete: SetNull)
+  vehicle       IncidentVehicle?
+  dispatches    IncidentDispatch[]
+  timeline      IncidentTimeline[]
+  notifications Notification[]
 
   @@index([status, priority, createdAt])
   @@index([emergencyPlanId])
@@ -492,7 +687,7 @@ model ResponseUnit {
   createdAt         DateTime   @default(now())
   updatedAt         DateTime   @updatedAt
 
-  assignedOfficer User? @relation("ResponseUnitAssignedOfficer", fields: [assignedOfficerId], references: [id], onDelete: SetNull)
+  assignedOfficer User?              @relation("ResponseUnitAssignedOfficer", fields: [assignedOfficerId], references: [id], onDelete: SetNull)
   dispatches      IncidentDispatch[]
 
   @@index([type, status])
@@ -513,9 +708,9 @@ model IncidentDispatch {
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
-  incident      Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
-  unit          ResponseUnit @relation(fields: [unitId], references: [id], onDelete: Restrict)
-  officer       User? @relation("IncidentDispatchOfficer", fields: [officerId], references: [id], onDelete: SetNull)
+  incident      Incident       @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  unit          ResponseUnit   @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  officer       User?          @relation("IncidentDispatchOfficer", fields: [officerId], references: [id], onDelete: SetNull)
   notifications Notification[]
 
   @@index([incidentId, status])
@@ -549,38 +744,38 @@ model AuditLog {
 }
 
 model EmergencyPlan {
-  id              String                 @id @default(uuid())
-  name            String
-  type            EmergencyPlanType      @default(CUSTOM)
-  severity        EmergencySeverity      @default(MEDIUM)
-  description     String?
+  id                         String            @id @default(uuid())
+  name                       String
+  type                       EmergencyPlanType @default(CUSTOM)
+  severity                   EmergencySeverity @default(MEDIUM)
+  description                String?
   defaultNotificationTitle   String?
   defaultNotificationMessage String?
-  isActive        Boolean                @default(false)
-  createdByUserId String
-  createdAt       DateTime               @default(now())
-  updatedAt       DateTime               @updatedAt
+  isActive                   Boolean           @default(false)
+  createdByUserId            String
+  createdAt                  DateTime          @default(now())
+  updatedAt                  DateTime          @updatedAt
 
-  createdBy    User                    @relation("EmergencyPlanCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  createdBy    User                   @relation("EmergencyPlanCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
   roadClosures EmergencyRoadClosure[]
   policePosts  EmergencyPolicePost[]
   steps        EmergencyPlanStep[]
-  incidents    Incident[] @relation("IncidentEmergencyPlan")
+  incidents    Incident[]             @relation("IncidentEmergencyPlan")
 
   @@index([type, severity, isActive])
 }
 
 model EmergencyPlanStep {
-  id               String            @id @default(uuid())
+  id               String   @id @default(uuid())
   planId           String
   stepOrder        Int
   title            String
   description      String?
   icon             String?
-  unitTypeRequired UnitType         @default(POLICE)
-  isRequired       Boolean          @default(true)
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
+  unitTypeRequired UnitType @default(POLICE)
+  isRequired       Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   plan EmergencyPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
 
@@ -618,29 +813,29 @@ model EmergencyPolicePost {
 }
 
 model Notification {
-  id              String    @id @default(uuid())
-  userId          String
-  title           String
-  message         String
-  isRead          Boolean   @default(false)
-  incidentId      String?
-  dispatchId      String?
-  incidentType    IncidentType?
+  id               String             @id @default(uuid())
+  userId           String
+  title            String
+  message          String
+  isRead           Boolean            @default(false)
+  incidentId       String?
+  dispatchId       String?
+  incidentType     IncidentType?
   incidentPriority IncidentPriority?
   incidentSeverity EmergencySeverity?
-  locationLabel   String?
-  vehicleSummary  String?
-  actionRequired  String?
-  metadata        Json?
-  emergencyPlanId String?
-  policePostLabel String?
-  targetLat       Float?
-  targetLng       Float?
-  readAt          DateTime?
-  createdAt       DateTime  @default(now())
+  locationLabel    String?
+  vehicleSummary   String?
+  actionRequired   String?
+  metadata         Json?
+  emergencyPlanId  String?
+  policePostLabel  String?
+  targetLat        Float?
+  targetLng        Float?
+  readAt           DateTime?
+  createdAt        DateTime           @default(now())
 
-  user     User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  incident Incident?        @relation(fields: [incidentId], references: [id], onDelete: SetNull)
+  user     User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  incident Incident?         @relation(fields: [incidentId], references: [id], onDelete: SetNull)
   dispatch IncidentDispatch? @relation(fields: [dispatchId], references: [id], onDelete: SetNull)
 
   @@index([userId, isRead, createdAt])
@@ -663,4 +858,3 @@ model MapReference {
   @@index([type, visible])
   @@index([visible])
 }
-

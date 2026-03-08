@@ -4,10 +4,21 @@ import { roleGuard } from "./guards/role.guard";
 
 export const routes: Routes = [
   {
+    path: "live-tracking/respond-ping/:id",
+    canActivate: [authGuard],
+    loadComponent: () =>
+      import("./pages/respond-tracking-ping.page").then((m) => m.RespondTrackingPingPageComponent)
+  },
+  {
     path: "live-tracking",
     canActivate: [authGuard],
     loadComponent: () =>
       import("./pages/share-location.page").then((m) => m.ShareLocationPageComponent)
+  },
+  {
+    path: "live-camera",
+    canActivate: [authGuard],
+    loadComponent: () => import("./pages/live-camera.page").then((m) => m.LiveCameraPageComponent)
   },
   {
     path: "share-location",
@@ -73,6 +84,31 @@ export const routes: Routes = [
     canActivate: [authGuard, roleGuard],
     data: { roles: ["ADMIN"] },
     loadComponent: () => import("./pages/users.page").then((m) => m.UsersPageComponent)
+  },
+  {
+    path: "tracking-overview",
+    canActivate: [authGuard, roleGuard],
+    data: { roles: ["ADMIN", "CASE_WORKER", "POLICE"] },
+    loadComponent: () => import("./pages/tracking-overview.page").then((m) => m.TrackingOverviewPageComponent)
+  },
+  {
+    path: "tracking-logs",
+    canActivate: [authGuard, roleGuard],
+    data: { roles: ["ADMIN", "CASE_WORKER", "POLICE"] },
+    loadComponent: () => import("./pages/tracking-logs.page").then((m) => m.TrackingLogsPageComponent)
+  },
+  {
+    path: "control-room",
+    canActivate: [authGuard, roleGuard],
+    data: { roles: ["ADMIN", "CASE_WORKER", "POLICE"] },
+    loadComponent: () => import("./pages/control-room.page").then((m) => m.ControlRoomPageComponent)
+  },
+  {
+    path: "live-camera-logs",
+    canActivate: [authGuard, roleGuard],
+    data: { roles: ["ADMIN", "CASE_WORKER", "POLICE"] },
+    loadComponent: () =>
+      import("./pages/live-camera-logs.page").then((m) => m.LiveCameraLogsPageComponent)
   },
   {
     path: "",

@@ -17,11 +17,18 @@ import { householdsRouter } from "./routes/households";
 import { housingUnitsRouter } from "./routes/housingUnits";
 import { incidentsRouter } from "./routes/incidents";
 import { landlordsRouter } from "./routes/landlords";
+import { controlRoomRouter, liveCameraRouter } from "./routes/liveCamera";
 import { locationRouter, locationsRouter } from "./routes/locations";
 import { mapReferencesRouter } from "./routes/mapReferences";
 import { notificationsRouter } from "./routes/notifications";
 import { responseUnitsRouter } from "./routes/responseUnits";
 import { rentalAgreementsRouter } from "./routes/rentalAgreements";
+import {
+  pushSubscriptionsRouter,
+  trackingLogsRouter,
+  trackingPingsRouter,
+  trackingUsersRouter
+} from "./routes/tracking";
 import { usersRouter } from "./routes/users";
 import { zonesRouter } from "./routes/zones";
 import { asyncHandler } from "./utils/asyncHandler";
@@ -89,6 +96,8 @@ app.get(
         isActive: true,
         liveLocationEnabled: true,
         liveLocationVisible: true,
+        canSendLiveCamera: true,
+        visibleInControlRoom: true,
         trustedDevice: {
           select: {
             isActive: true,
@@ -110,6 +119,8 @@ app.get(
       isActive: user.isActive,
       liveLocationEnabled: user.liveLocationEnabled,
       liveLocationVisible: user.liveLocationVisible,
+      canSendLiveCamera: user.canSendLiveCamera,
+      visibleInControlRoom: user.visibleInControlRoom,
       trustedDeviceAssigned: Boolean(user.trustedDevice?.isActive),
       trustedDeviceLastSeenAt: user.trustedDevice?.lastSeenAt ?? null
     });
@@ -134,6 +145,12 @@ app.use("/exports", exportsRouter);
 app.use("/response-units", responseUnitsRouter);
 app.use("/dispatches", dispatchesRouter);
 app.use("/locations", locationsRouter);
+app.use("/tracking-pings", trackingPingsRouter);
+app.use("/tracking-logs", trackingLogsRouter);
+app.use("/tracking-users", trackingUsersRouter);
+app.use("/push-subscriptions", pushSubscriptionsRouter);
+app.use("/live-camera", liveCameraRouter);
+app.use("/control-room", controlRoomRouter);
 
 app.use(notFound);
 app.use(errorHandler);

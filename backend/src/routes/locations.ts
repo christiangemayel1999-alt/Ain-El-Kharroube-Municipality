@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { LocationSessionSource, LocationUpdateSource, Role } from "@prisma/client";
+import { LocationSessionSource, LocationUpdateSource, Prisma, Role, TrackingPingStatus } from "@prisma/client";
 import rateLimit from "express-rate-limit";
 import { Request, Response, Router } from "express";
 import { z } from "zod";
@@ -9,6 +9,8 @@ import { authenticateBearerToken, extractBearerToken } from "../middleware/auth"
 import { requireRoles } from "../middleware/rbac";
 import { validateBody, validateQuery } from "../middleware/validate";
 import { writeAudit } from "../services/audit";
+import { writeTrackingEvent } from "../services/trackingAudit";
+import { expireDueTrackingPings } from "../services/trackingPing";
 import { asyncHandler } from "../utils/asyncHandler";
 
 const LOCATION_VIEW_ROLES = [Role.ADMIN, Role.CASE_WORKER, Role.POLICE] as const;
@@ -388,6 +390,17 @@ locationRouter.post(
     });
 
     await touchShareToken(actor.tokenId, now);
+    await writeTrackingEvent({
+      userId: actor.userId,
+      actorUserId: actor.mode === "AUTH" ? actor.userId : null,
+      eventType: "LIVE_TRACKING_STARTED",
+      eventSummary: "Live tracking started.",
+      relatedSessionId: session.id,
+      metadata: {
+        mode: actor.mode,
+        source: actor.sessionSource
+      }
+    });
 
     return res.json({
       isSharing: true,
@@ -465,6 +478,21 @@ locationRouter.post(
     });
 
     await touchShareToken(actor.tokenId, now);
+    await writeTrackingEvent({
+      userId: actor.userId,
+      actorUserId: actor.mode === "AUTH" ? actor.userId : null,
+      eventType: "LIVE_TRACKING_UPDATE_RECEIVED",
+      eventSummary: "Live tracking location update received.",
+      relatedSessionId: session.id,
+      metadata: {
+        mode: actor.mode,
+        latitude: payload.latitude,
+        longitude: payload.longitude,
+        accuracyM: payload.accuracy,
+        source,
+        receivedAt: now.toISOString()
+      }
+    });
 
     return res.json({
       accepted: true,
@@ -484,6 +512,15 @@ locationRouter.post(
     }
 
     const now = new Date();
+    const activeSessions = await prisma.locationSharingSession.findMany({
+      where: {
+        userId: actor.userId,
+        isActive: true
+      },
+      select: {
+        id: true
+      }
+    });
 
     await prisma.locationSharingSession.updateMany({
       where: {
@@ -509,6 +546,20 @@ locationRouter.post(
     });
 
     await touchShareToken(actor.tokenId, now);
+    for (const session of activeSessions) {
+      await writeTrackingEvent({
+        userId: actor.userId,
+        actorUserId: actor.mode === "AUTH" ? actor.userId : null,
+        eventType: "LIVE_TRACKING_STOPPED",
+        eventSummary: "Live tracking stopped.",
+        relatedSessionId: session.id,
+        metadata: {
+          mode: actor.mode,
+          stoppedReason: "USER_STOPPED",
+          stoppedAt: now.toISOString()
+        }
+      });
+    }
 
     return res.json({
       isSharing: false,
@@ -559,6 +610,8 @@ locationsRouter.get(
   requireRoles(...LOCATION_VIEW_ROLES),
   validateQuery(latestLocationsQuerySchema),
   asyncHandler(async (req, res) => {
+    await expireDueTrackingPings(120);
+
     const query = req.query as z.infer<typeof latestLocationsQuerySchema>;
     const staleThreshold = Date.now() - query.staleAfterSeconds * 1000;
 
@@ -585,21 +638,57 @@ locationsRouter.get(
       orderBy: [{ isSharing: "desc" }, { lastReceivedAt: "desc" }]
     });
 
+    const userIds = locations.map((entry) => entry.user.id);
+    type LatestPingRow = {
+      id: string;
+      targetUserId: string;
+      status: TrackingPingStatus;
+      createdAt: Date;
+      respondedAt: Date | null;
+    };
+
+    const latestPings = userIds.length
+      ? await prisma.$queryRaw<LatestPingRow[]>(Prisma.sql`
+        SELECT DISTINCT ON ("targetUserId")
+          "id", "targetUserId", "status", "createdAt", "respondedAt"
+        FROM "LocationPingRequest"
+        WHERE "targetUserId" IN (${Prisma.join(userIds)})
+        ORDER BY "targetUserId", "createdAt" DESC
+      `)
+      : [];
+
+    const latestPingByUserId = new Map(latestPings.map((entry) => [entry.targetUserId, entry]));
+    const now = Date.now();
+
     return res.json(
-      locations.map((entry) => ({
-        personId: entry.user.id,
-        fullName: entry.user.fullName,
-        role: entry.user.role,
-        latitude: entry.lastLatitude,
-        longitude: entry.lastLongitude,
-        accuracyM: entry.lastAccuracyM,
-        lastRecordedAt: entry.lastRecordedAt,
-        lastReceivedAt: entry.lastReceivedAt,
-        source: entry.lastSource,
-        batteryLevel: entry.lastBatteryLevel,
-        isTrackingActive: entry.isSharing,
-        isStale: !entry.lastReceivedAt || entry.lastReceivedAt.getTime() < staleThreshold
-      }))
+      locations.map((entry) => {
+        const latestPing = latestPingByUserId.get(entry.user.id);
+        const freshnessSeconds = entry.lastReceivedAt
+          ? Math.max(0, Math.round((now - entry.lastReceivedAt.getTime()) / 1000))
+          : null;
+
+        return {
+          personId: entry.user.id,
+          fullName: entry.user.fullName,
+          role: entry.user.role,
+          latitude: entry.lastLatitude,
+          longitude: entry.lastLongitude,
+          accuracyM: entry.lastAccuracyM,
+          lastRecordedAt: entry.lastRecordedAt,
+          lastReceivedAt: entry.lastReceivedAt,
+          source: entry.lastSource,
+          batteryLevel: entry.lastBatteryLevel,
+          isTrackingActive: entry.isSharing,
+          isStale: !entry.lastReceivedAt || entry.lastReceivedAt.getTime() < staleThreshold,
+          freshnessSeconds,
+          lastPingStatus: latestPing?.status ?? null,
+          lastPingRequestedAt: latestPing?.createdAt ?? null,
+          lastPingRespondedAt: latestPing?.respondedAt ?? null,
+          recentlyPinged:
+            Boolean(latestPing?.createdAt) &&
+            now - (latestPing?.createdAt?.getTime() ?? 0) <= 5 * 60 * 1000
+        };
+      })
     );
   })
 );

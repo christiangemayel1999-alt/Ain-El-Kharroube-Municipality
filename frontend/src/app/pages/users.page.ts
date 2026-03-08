@@ -6,6 +6,7 @@ import { MatCardModule } from "@angular/material/card";
 import { MatFormFieldModule } from "@angular/material/form-field";
 import { MatInputModule } from "@angular/material/input";
 import { MatSelectModule } from "@angular/material/select";
+import { RouterModule } from "@angular/router";
 import { Role, TrustedDeviceSummary, User } from "../models";
 import { ApiService } from "../services/api.service";
 
@@ -25,13 +26,14 @@ type AdminUser = User & {
     MatFormFieldModule,
     MatInputModule,
     MatSelectModule,
-    MatButtonModule
+    MatButtonModule,
+    RouterModule
   ],
   template: `
     <div class="shell">
       <mat-card>
         <h2>User Management</h2>
-        <p class="muted">Admin can create users, configure live tracking, and reset trusted devices.</p>
+        <p class="muted">Admin can create users, configure live tracking/camera access, and reset trusted devices.</p>
 
         <form [formGroup]="createForm" (ngSubmit)="createUser()" class="form-grid">
           <mat-form-field appearance="outline">
@@ -80,6 +82,22 @@ type AdminUser = User & {
             </mat-select>
           </mat-form-field>
 
+          <mat-form-field appearance="outline">
+            <mat-label>Live camera sender</mat-label>
+            <mat-select formControlName="canSendLiveCamera">
+              <mat-option [value]="true">Enabled</mat-option>
+              <mat-option [value]="false">Disabled</mat-option>
+            </mat-select>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline">
+            <mat-label>Visible in Control Room</mat-label>
+            <mat-select formControlName="visibleInControlRoom">
+              <mat-option [value]="true">Visible</mat-option>
+              <mat-option [value]="false">Hidden</mat-option>
+            </mat-select>
+          </mat-form-field>
+
           <div class="actions">
             <button mat-raised-button color="primary" [disabled]="saving() || createForm.invalid">
               {{ saving() ? 'Creating...' : 'Create User' }}
@@ -103,6 +121,8 @@ type AdminUser = User & {
                 <th>Status</th>
                 <th>Live sender</th>
                 <th>Live map</th>
+                <th>Camera sender</th>
+                <th>Control Room</th>
                 <th>Trusted device</th>
                 <th>Actions</th>
               </tr>
@@ -115,6 +135,8 @@ type AdminUser = User & {
                 <td data-label="Status">{{ user.isActive ? 'Active' : 'Disabled' }}</td>
                 <td data-label="Live sender">{{ user.liveLocationEnabled ? 'Enabled' : 'Disabled' }}</td>
                 <td data-label="Live map">{{ user.liveLocationVisible ? 'Visible' : 'Hidden' }}</td>
+                <td data-label="Camera sender">{{ user.canSendLiveCamera ? 'Enabled' : 'Disabled' }}</td>
+                <td data-label="Control Room">{{ user.visibleInControlRoom ? 'Visible' : 'Hidden' }}</td>
                 <td data-label="Trusted device">
                   <ng-container *ngIf="user.trustedDevice?.isActive; else noTrustedDevice">
                     <div><strong>Assigned</strong></div>
@@ -146,6 +168,22 @@ type AdminUser = User & {
                     mat-stroked-button
                     type="button"
                     [disabled]="busyUserId() === user.id"
+                    (click)="toggleCameraSender(user)"
+                  >
+                    {{ user.canSendLiveCamera ? 'Disable camera sender' : 'Enable camera sender' }}
+                  </button>
+                  <button
+                    mat-stroked-button
+                    type="button"
+                    [disabled]="busyUserId() === user.id"
+                    (click)="toggleControlRoomVisibility(user)"
+                  >
+                    {{ user.visibleInControlRoom ? 'Hide from Control Room' : 'Show in Control Room' }}
+                  </button>
+                  <button
+                    mat-stroked-button
+                    type="button"
+                    [disabled]="busyUserId() === user.id"
                     (click)="toggleAccountStatus(user)"
                   >
                     {{ user.isActive ? 'Disable account' : 'Enable account' }}
@@ -159,6 +197,15 @@ type AdminUser = User & {
                   >
                     Reset trusted device
                   </button>
+                  <button
+                    mat-stroked-button
+                    type="button"
+                    [disabled]="busyUserId() === user.id"
+                    (click)="pingForLocation(user.id)"
+                  >
+                    Ping for location
+                  </button>
+                  <a mat-button [routerLink]="['/tracking-logs']" [queryParams]="{ userId: user.id }">Tracking logs</a>
                 </td>
               </tr>
             </tbody>
@@ -305,7 +352,9 @@ export class UsersPageComponent implements OnInit {
     role: ["VIEWER" as Role, Validators.required],
     isActive: [true],
     liveLocationEnabled: [false],
-    liveLocationVisible: [false]
+    liveLocationVisible: [false],
+    canSendLiveCamera: [false],
+    visibleInControlRoom: [true]
   });
 
   ngOnInit() {
@@ -332,7 +381,9 @@ export class UsersPageComponent implements OnInit {
           role: "VIEWER",
           isActive: true,
           liveLocationEnabled: false,
-          liveLocationVisible: false
+          liveLocationVisible: false,
+          canSendLiveCamera: false,
+          visibleInControlRoom: true
         });
         this.loadUsers();
       },
@@ -349,6 +400,22 @@ export class UsersPageComponent implements OnInit {
 
   toggleLiveMap(user: AdminUser) {
     this.updateUser(user, { liveLocationVisible: !user.liveLocationVisible }, user.liveLocationVisible ? "Live map visibility disabled." : "Live map visibility enabled.");
+  }
+
+  toggleCameraSender(user: AdminUser) {
+    this.updateUser(
+      user,
+      { canSendLiveCamera: !user.canSendLiveCamera },
+      user.canSendLiveCamera ? "Camera sender disabled." : "Camera sender enabled."
+    );
+  }
+
+  toggleControlRoomVisibility(user: AdminUser) {
+    this.updateUser(
+      user,
+      { visibleInControlRoom: !user.visibleInControlRoom },
+      user.visibleInControlRoom ? "Control Room visibility disabled." : "Control Room visibility enabled."
+    );
   }
 
   toggleAccountStatus(user: AdminUser) {
@@ -373,6 +440,22 @@ export class UsersPageComponent implements OnInit {
       error: (err) => {
         this.busyUserId.set(null);
         this.error.set(String(err?.error?.message ?? "Could not reset trusted device."));
+      }
+    });
+  }
+
+  pingForLocation(userId: string) {
+    this.busyUserId.set(userId);
+    this.error.set(null);
+    this.message.set(null);
+    this.api.createTrackingPing(userId).subscribe({
+      next: () => {
+        this.busyUserId.set(null);
+        this.message.set("Location ping sent.");
+      },
+      error: (err) => {
+        this.busyUserId.set(null);
+        this.error.set(String(err?.error?.message ?? "Could not send location ping."));
       }
     });
   }

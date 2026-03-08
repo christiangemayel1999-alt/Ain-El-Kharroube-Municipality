@@ -6,8 +6,8 @@ import { MatCardModule } from "@angular/material/card";
 import { MatFormFieldModule } from "@angular/material/form-field";
 import { MatInputModule } from "@angular/material/input";
 import { MatSelectModule } from "@angular/material/select";
-import { RouterModule } from "@angular/router";
-import { IncidentRecord, IncidentStatus, IncidentVehicle } from "../models";
+import { ActivatedRoute, RouterModule } from "@angular/router";
+import { IncidentLocationSource, IncidentRecord, IncidentStatus, IncidentVehicle } from "../models";
 import { ApiService } from "../services/api.service";
 import { AuthService } from "../services/auth.service";
 import { LiveTrackingService } from "../services/live-tracking.service";
@@ -291,6 +291,7 @@ export class IncidentsPageComponent {
   private readonly api = inject(ApiService);
   private readonly auth = inject(AuthService);
   private readonly liveTracking = inject(LiveTrackingService);
+  private readonly route = inject(ActivatedRoute);
   private readonly fb = inject(FormBuilder);
 
   readonly incidentStatuses: IncidentStatus[] = [
@@ -310,6 +311,8 @@ export class IncidentsPageComponent {
   readonly error = signal<string | null>(null);
   readonly locationMessage = signal<string | null>(null);
   readonly locationError = signal<string | null>(null);
+  private locationSourceOverride: IncidentLocationSource | null = null;
+  private prefilledFromCamera = false;
 
   readonly incidentForm = this.fb.group({
     title: [""],
@@ -338,6 +341,7 @@ export class IncidentsPageComponent {
 
   constructor() {
     this.loadIncidents();
+    this.applyPrefillFromQuery();
     this.tryAutoAttachLocation();
   }
 
@@ -354,7 +358,7 @@ export class IncidentsPageComponent {
     this.liveTracking
       .captureCurrentLocation(true)
       .then((snapshot) => {
-        this.applyLocationSnapshot(snapshot, "Current location attached.");
+        this.applyLocationSnapshot(snapshot, "Current location attached.", "GPS_FRESH");
         this.locating.set(false);
       })
       .catch((err) => {
@@ -368,6 +372,10 @@ export class IncidentsPageComponent {
       return;
     }
     const value = this.incidentForm.getRawValue();
+    const hasCoordinates = value.locationLat != null && value.locationLng != null;
+    const locationSource: IncidentLocationSource | null = hasCoordinates
+      ? this.locationSourceOverride ?? "MANUAL"
+      : null;
     const vehicleInvolved = !!value.vehicleInvolved;
     const vehicle: IncidentVehicle | null = vehicleInvolved
       ? {
@@ -399,6 +407,7 @@ export class IncidentsPageComponent {
         locationLat: value.locationLat,
         locationLng: value.locationLng,
         locationAccuracyM: value.locationAccuracyM,
+        locationSource,
         dueDate: this.toNullable(value.dueDate),
         vehicle
       })
@@ -426,6 +435,7 @@ export class IncidentsPageComponent {
             vehicleNotes: "",
             photoUrl: ""
           });
+          this.locationSourceOverride = null;
           this.loadIncidents();
         },
         error: (err: { error?: { message?: string } }) => {
@@ -436,9 +446,13 @@ export class IncidentsPageComponent {
   }
 
   private tryAutoAttachLocation() {
+    if (this.prefilledFromCamera) {
+      return;
+    }
+
     const fresh = this.liveTracking.getFreshLocation(120_000);
     if (fresh) {
-      this.applyLocationSnapshot(fresh, "Latest location auto-attached.");
+      this.applyLocationSnapshot(fresh, "Latest location auto-attached.", "GPS_RECENT");
       return;
     }
 
@@ -454,7 +468,7 @@ export class IncidentsPageComponent {
         }
 
         return this.liveTracking.captureCurrentLocation(false).then((snapshot) => {
-          this.applyLocationSnapshot(snapshot, "Current location auto-attached.");
+          this.applyLocationSnapshot(snapshot, "Current location auto-attached.", "GPS_FRESH");
         });
       })
       .catch(() => {
@@ -464,7 +478,8 @@ export class IncidentsPageComponent {
 
   private applyLocationSnapshot(
     snapshot: { latitude: number; longitude: number; accuracyM: number },
-    message: string
+    message: string,
+    source: IncidentLocationSource
   ) {
     const currentLabel = String(this.incidentForm.get("locationLabel")?.value ?? "").trim();
     this.incidentForm.patchValue({
@@ -473,6 +488,7 @@ export class IncidentsPageComponent {
       locationAccuracyM: Math.round(snapshot.accuracyM),
       locationLabel: currentLabel || "Current device location"
     });
+    this.locationSourceOverride = source;
     this.locationMessage.set(message);
     this.locationError.set(null);
   }
@@ -484,5 +500,46 @@ export class IncidentsPageComponent {
   private toNullable(value: unknown) {
     const text = String(value ?? "").trim();
     return text.length ? text : null;
+  }
+
+  private applyPrefillFromQuery() {
+    const query = this.route.snapshot.queryParamMap;
+    const source = String(query.get("source") ?? "").trim().toLowerCase();
+    if (source !== "live_camera") {
+      return;
+    }
+
+    const title = String(query.get("title") ?? "").trim();
+    const locationLabel = String(query.get("locationLabel") ?? "").trim();
+    const rawLocationSource = String(query.get("locationSource") ?? "").trim().toUpperCase();
+    const locationSource: IncidentLocationSource =
+      rawLocationSource === "GPS_FRESH" ||
+      rawLocationSource === "GPS_RECENT" ||
+      rawLocationSource === "MANUAL" ||
+      rawLocationSource === "LIVE_TRACKING_RECENT"
+        ? (rawLocationSource as IncidentLocationSource)
+        : "LIVE_TRACKING_RECENT";
+
+    const lat = this.parseNumber(query.get("locationLat"));
+    const lng = this.parseNumber(query.get("locationLng"));
+
+    this.incidentForm.patchValue({
+      title: title || this.incidentForm.get("title")?.value || "",
+      locationLabel: locationLabel || this.incidentForm.get("locationLabel")?.value || "",
+      locationLat: lat,
+      locationLng: lng
+    });
+    this.locationSourceOverride = lat != null && lng != null ? locationSource : null;
+    this.locationMessage.set("Incident form prefilled from selected live camera stream.");
+    this.locationError.set(null);
+    this.prefilledFromCamera = true;
+  }
+
+  private parseNumber(value: string | null) {
+    if (!value) {
+      return null;
+    }
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
   }
 }

@@ -8,6 +8,7 @@ import { env } from "../config/env";
 import { prisma } from "../lib/prisma";
 import { requireAuth, userRequiresTrustedDeviceProtection } from "../middleware/auth";
 import { writeAudit } from "../services/audit";
+import { writeTrackingEvent } from "../services/trackingAudit";
 import { validateBody } from "../middleware/validate";
 import { asyncHandler } from "../utils/asyncHandler";
 
@@ -141,6 +142,13 @@ async function resolveTrustedDeviceForLogin(params: {
     });
 
     await writeAudit(user.id, "TRUSTED_DEVICE_ASSIGNED", "UserTrustedDevice", trustedDevice.id);
+    await writeTrackingEvent({
+      userId: user.id,
+      actorUserId: user.id,
+      eventType: "TRUSTED_DEVICE_ASSIGNED",
+      eventSummary: "Trusted device assigned during login.",
+      relatedTrustedDeviceId: trustedDevice.id
+    });
     return { ok: true, trustedDeviceId: trustedDevice.id };
   }
 
@@ -222,6 +230,8 @@ authRouter.post(
         role: user.role,
         liveLocationEnabled: user.liveLocationEnabled,
         liveLocationVisible: user.liveLocationVisible,
+        canSendLiveCamera: user.canSendLiveCamera,
+        visibleInControlRoom: user.visibleInControlRoom,
         trustedDeviceAssigned: Boolean(trustedDeviceResult.trustedDeviceId)
       }
     });
@@ -242,6 +252,8 @@ authRouter.get(
         isActive: true,
         liveLocationEnabled: true,
         liveLocationVisible: true,
+        canSendLiveCamera: true,
+        visibleInControlRoom: true,
         trustedDevice: {
           select: {
             isActive: true,
@@ -263,6 +275,8 @@ authRouter.get(
       isActive: user.isActive,
       liveLocationEnabled: user.liveLocationEnabled,
       liveLocationVisible: user.liveLocationVisible,
+      canSendLiveCamera: user.canSendLiveCamera,
+      visibleInControlRoom: user.visibleInControlRoom,
       trustedDeviceAssigned: Boolean(user.trustedDevice?.isActive),
       trustedDeviceLastSeenAt: user.trustedDevice?.lastSeenAt ?? null
     });

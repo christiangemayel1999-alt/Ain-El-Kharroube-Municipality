@@ -9,13 +9,16 @@ import { Router, RouterLink, RouterLinkActive, RouterOutlet } from "@angular/rou
 import { Subscription } from "rxjs";
 import { Role } from "./models";
 import { AuthService } from "./services/auth.service";
+import { LiveCameraService } from "./services/live-camera.service";
 import { LiveTrackingService } from "./services/live-tracking.service";
+import { TrackingPingService } from "./services/tracking-ping.service";
 
 type NavItem = {
   label: string;
   route: string;
   roles?: Role[];
   requiresLiveTracking?: boolean;
+  requiresCameraSender?: boolean;
 };
 
 @Component({
@@ -125,6 +128,38 @@ type NavItem = {
             </div>
             <p class="tracking-error" *ngIf="liveTracking.permissionError()">{{ liveTracking.permissionError() }}</p>
             <p class="tracking-error" *ngIf="liveTracking.error()">{{ liveTracking.error() }}</p>
+          </section>
+
+          <section class="ping-banner" *ngIf="trackingPing.activePing() as ping">
+            <p><strong>Municipality is requesting your current location.</strong></p>
+            <p>
+              Requested {{ ping.createdAt | date:'HH:mm:ss' }}.
+              Expires {{ ping.expiresAt | date:'HH:mm:ss' }}.
+            </p>
+            <p class="ping-message" *ngIf="ping.requestMessage">{{ ping.requestMessage }}</p>
+            <div class="tracking-actions">
+              <button
+                mat-raised-button
+                color="primary"
+                type="button"
+                [disabled]="trackingPing.sending()"
+                (click)="respondToActivePing()"
+              >
+                {{ trackingPing.sending() ? 'Sending...' : 'Send location now' }}
+              </button>
+              <a mat-button [routerLink]="['/live-tracking/respond-ping', ping.id]">Open response page</a>
+              <button mat-button type="button" (click)="dismissActivePing()">Dismiss</button>
+              <button
+                mat-stroked-button
+                type="button"
+                *ngIf="trackingPing.pushSupported() && trackingPing.pushPermission() !== 'denied' && !trackingPing.pushEnabled()"
+                (click)="trackingPing.enablePushNotifications()"
+              >
+                Enable browser alerts
+              </button>
+            </div>
+            <p class="tracking-error" *ngIf="trackingPing.error()">{{ trackingPing.error() }}</p>
+            <p class="tracking-state-ok" *ngIf="trackingPing.message()">{{ trackingPing.message() }}</p>
           </section>
 
           <main class="app-content">
@@ -254,6 +289,28 @@ type NavItem = {
         font-weight: 600;
       }
 
+      .ping-banner {
+        border-bottom: 1px solid #d9e1ea;
+        background: #f8fafc;
+        padding: 0.7rem clamp(0.7rem, 2vw, 1rem);
+        display: grid;
+        gap: 0.4rem;
+      }
+
+      .ping-banner p {
+        margin: 0;
+        color: #0f172a;
+      }
+
+      .ping-message {
+        color: #334155 !important;
+      }
+
+      .tracking-state-ok {
+        color: #166534 !important;
+        font-weight: 600;
+      }
+
       @media (max-width: 1023px) {
         .title {
           font-size: 1rem;
@@ -264,23 +321,32 @@ type NavItem = {
 })
 export class AppComponent implements OnInit, OnDestroy {
   readonly auth = inject(AuthService);
+  readonly liveCamera = inject(LiveCameraService);
   readonly liveTracking = inject(LiveTrackingService);
+  readonly trackingPing = inject(TrackingPingService);
   private readonly router = inject(Router);
   private readonly breakpointObserver = inject(BreakpointObserver);
   private breakpointSub?: Subscription;
   private readonly userSyncEffect = effect(() => {
-    this.liveTracking.syncAuthenticatedUser(this.auth.currentUser());
+    const user = this.auth.currentUser();
+    this.liveTracking.syncAuthenticatedUser(user);
+    this.trackingPing.syncAuthenticatedUser(user);
   });
 
   readonly isMobile = signal(false);
   readonly navItems: NavItem[] = [
     { label: "Dashboard", route: "/dashboard" },
     { label: "Live Tracking", route: "/live-tracking", requiresLiveTracking: true },
+    { label: "Live Camera", route: "/live-camera", requiresCameraSender: true },
+    { label: "Control Room", route: "/control-room", roles: ["ADMIN", "CASE_WORKER", "POLICE"] },
     { label: "Households", route: "/households" },
     { label: "Incidents", route: "/incidents" },
     { label: "Plans", route: "/emergency-plans", roles: ["ADMIN", "CASE_WORKER"] },
     { label: "Units", route: "/response-units", roles: ["ADMIN", "CASE_WORKER", "POLICE"] },
     { label: "Alerts", route: "/officer-notifications", roles: ["ADMIN", "CASE_WORKER", "POLICE"] },
+    { label: "Tracking Ops", route: "/tracking-overview", roles: ["ADMIN", "CASE_WORKER", "POLICE"] },
+    { label: "Tracking Logs", route: "/tracking-logs", roles: ["ADMIN", "CASE_WORKER", "POLICE"] },
+    { label: "Camera Logs", route: "/live-camera-logs", roles: ["ADMIN", "CASE_WORKER", "POLICE"] },
     { label: "Cars", route: "/cars" },
     { label: "Users", route: "/users", roles: ["ADMIN"] }
   ];
@@ -293,7 +359,9 @@ export class AppComponent implements OnInit, OnDestroy {
     if (this.auth.isLoggedIn()) {
       this.auth.me().subscribe({
         error: () => {
+          this.liveCamera.prepareForLogout();
           this.liveTracking.prepareForLogout();
+          this.trackingPing.prepareForLogout();
           this.auth.logout();
           void this.router.navigateByUrl("/login");
         }
@@ -307,10 +375,15 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   canView(item: NavItem) {
-    if (!item.roles?.length) {
-      return item.requiresLiveTracking ? Boolean(this.auth.currentUser()?.liveLocationEnabled) : true;
+    const user = this.auth.currentUser();
+    if (item.requiresCameraSender && (!user?.canSendLiveCamera || !user?.visibleInControlRoom)) {
+      return false;
     }
-    const role = this.auth.currentUser()?.role;
+
+    if (!item.roles?.length) {
+      return item.requiresLiveTracking ? Boolean(user?.liveLocationEnabled) : true;
+    }
+    const role = user?.role;
     if (!role) {
       return false;
     }
@@ -327,7 +400,9 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   logout() {
+    this.liveCamera.prepareForLogout();
     this.liveTracking.prepareForLogout();
+    this.trackingPing.prepareForLogout();
     this.auth.logout();
     void this.router.navigateByUrl("/login");
   }
@@ -346,6 +421,22 @@ export class AppComponent implements OnInit, OnDestroy {
 
   dismissLiveTrackingPrompt() {
     this.liveTracking.dismissPrompt();
+  }
+
+  respondToActivePing() {
+    const ping = this.trackingPing.activePing();
+    if (!ping) {
+      return;
+    }
+    void this.trackingPing.respondNow(ping.id);
+  }
+
+  dismissActivePing() {
+    const ping = this.trackingPing.activePing();
+    if (!ping) {
+      return;
+    }
+    this.trackingPing.dismissPing(ping.id);
   }
 }
 

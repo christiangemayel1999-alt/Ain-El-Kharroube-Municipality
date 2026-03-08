@@ -3195,7 +3195,7 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
           ? "STALE"
           : "ACTIVE"
         : "INACTIVE";
-      const icon = this.createLivePeopleIcon(statusText);
+      const icon = this.createLivePeopleIcon(statusText, Boolean(person.recentlyPinged));
       const marker = L.marker([person.latitude, person.longitude], { icon });
 
       const popupParts = [
@@ -3203,6 +3203,14 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
         `Role: ${person.role}`,
         `Tracking: ${statusText}`,
         `Last update: ${this.formatLocationTime(person.lastReceivedAt)}`,
+        `Freshness: ${this.formatFreshness(person.freshnessSeconds ?? null)}`,
+        person.lastPingStatus ? `Last ping: ${person.lastPingStatus}` : "Last ping: N/A",
+        person.lastPingRequestedAt
+          ? `Ping requested: ${this.formatLocationTime(person.lastPingRequestedAt)}`
+          : "Ping requested: N/A",
+        person.lastPingRespondedAt
+          ? `Ping responded: ${this.formatLocationTime(person.lastPingRespondedAt)}`
+          : "Ping responded: N/A",
         person.accuracyM != null ? `Accuracy: ${Math.round(person.accuracyM)}m` : "Accuracy: N/A"
       ];
       marker.bindPopup(popupParts.map((part) => this.escapeHtml(part)).join(" | "));
@@ -3456,17 +3464,18 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
     });
   }
 
-  private createLivePeopleIcon(status: "ACTIVE" | "STALE" | "INACTIVE") {
+  private createLivePeopleIcon(status: "ACTIVE" | "STALE" | "INACTIVE", recentlyPinged: boolean) {
     const color =
       status === "ACTIVE" ? "#16a34a" : status === "STALE" ? "#f97316" : "#64748b";
-    const text = status === "ACTIVE" ? "L" : status === "STALE" ? "S" : "O";
+    const text = recentlyPinged ? "P" : status === "ACTIVE" ? "L" : status === "STALE" ? "S" : "O";
+    const border = recentlyPinged ? "#f59e0b" : "rgba(255,255,255,.95)";
 
     return L.divIcon({
       className: "",
       iconSize: [28, 28],
       iconAnchor: [14, 14],
       popupAnchor: [0, -12],
-      html: `<div style="width:28px;height:28px;border-radius:999px;background:${color};border:2px solid rgba(255,255,255,.95);color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.35);">${text}</div>`
+      html: `<div style="width:28px;height:28px;border-radius:999px;background:${color};border:2px solid ${border};color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.35);">${text}</div>`
     });
   }
 
@@ -3479,6 +3488,19 @@ export class DashboardPageComponent implements AfterViewInit, OnDestroy {
       return "Unknown";
     }
     return date.toLocaleTimeString();
+  }
+
+  private formatFreshness(value: number | null) {
+    if (value == null) {
+      return "N/A";
+    }
+    if (value < 60) {
+      return `${value}s`;
+    }
+    if (value < 3600) {
+      return `${Math.round(value / 60)}m`;
+    }
+    return `${Math.round(value / 3600)}h`;
   }
 
   private escapeHtml(value: string) {

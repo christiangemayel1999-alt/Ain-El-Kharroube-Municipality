@@ -10,7 +10,10 @@ const envSchema = z.object({
   JWT_SECRET: z.string().min(24),
   JWT_EXPIRES_IN: z.string().default("8h"),
   CLIENT_ORIGIN: z.string().optional(),
-  FRONTEND_ORIGIN: z.string().optional()
+  FRONTEND_ORIGIN: z.string().optional(),
+  WEB_PUSH_VAPID_PUBLIC_KEY: z.string().optional(),
+  WEB_PUSH_VAPID_PRIVATE_KEY: z.string().optional(),
+  WEB_PUSH_SUBJECT: z.string().optional()
 });
 
 export const env = envSchema.parse(process.env);

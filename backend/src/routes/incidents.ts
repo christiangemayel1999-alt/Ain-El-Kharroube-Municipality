@@ -1,5 +1,6 @@
 import {
   EmergencySeverity,
+  IncidentLocationSource,
   IncidentPriority,
   IncidentStatus,
   IncidentTimelineEventType,
@@ -46,6 +47,7 @@ const incidentSchemaBase = z.object({
   locationLat: z.number().min(-90).max(90).optional().nullable(),
   locationLng: z.number().min(-180).max(180).optional().nullable(),
   locationAccuracyM: z.number().min(0).max(5000).optional().nullable(),
+  locationSource: z.nativeEnum(IncidentLocationSource).optional().nullable(),
   status: z.nativeEnum(IncidentStatus).default(IncidentStatus.REPORTED),
   dueDate: z.string().optional().nullable(),
   resolutionNotes: z.string().trim().max(3000).optional().nullable(),
@@ -142,6 +144,7 @@ incidentsRouter.post(
               locationLat: payload.locationLat ?? null,
               locationLng: payload.locationLng ?? null,
               locationAccuracyM: payload.locationAccuracyM ?? null,
+              locationSource: payload.locationSource ?? null,
               status: payload.status,
               dueDate: payload.dueDate ? new Date(payload.dueDate) : null,
               resolutionNotes: payload.resolutionNotes ?? null
@@ -307,6 +310,7 @@ incidentsRouter.patch(
         locationLng: payload.locationLng === undefined ? undefined : payload.locationLng,
         locationAccuracyM:
           payload.locationAccuracyM === undefined ? undefined : payload.locationAccuracyM,
+        locationSource: payload.locationSource === undefined ? undefined : payload.locationSource,
         status,
         dueDate: payload.dueDate === undefined ? undefined : payload.dueDate ? new Date(payload.dueDate) : null,
         resolutionNotes:

@@ -1,11 +1,13 @@
 import bcrypt from "bcrypt";
-import { Role } from "@prisma/client";
+import { LiveCameraSessionStatus, Role } from "@prisma/client";
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { requireRoles } from "../middleware/rbac";
 import { validateBody } from "../middleware/validate";
 import { writeAudit } from "../services/audit";
+import { writeLiveCameraEvent } from "../services/liveCameraAudit";
+import { writeTrackingEvent } from "../services/trackingAudit";
 import { asyncHandler } from "../utils/asyncHandler";
 
 const createUserSchema = z.object({
@@ -15,7 +17,9 @@ const createUserSchema = z.object({
   role: z.nativeEnum(Role),
   isActive: z.boolean().optional().default(true),
   liveLocationEnabled: z.boolean().optional().default(false),
-  liveLocationVisible: z.boolean().optional().default(false)
+  liveLocationVisible: z.boolean().optional().default(false),
+  canSendLiveCamera: z.boolean().optional().default(false),
+  visibleInControlRoom: z.boolean().optional().default(true)
 });
 
 const updateUserSchema = z.object({
@@ -25,7 +29,9 @@ const updateUserSchema = z.object({
   role: z.nativeEnum(Role).optional(),
   isActive: z.boolean().optional(),
   liveLocationEnabled: z.boolean().optional(),
-  liveLocationVisible: z.boolean().optional()
+  liveLocationVisible: z.boolean().optional(),
+  canSendLiveCamera: z.boolean().optional(),
+  visibleInControlRoom: z.boolean().optional()
 });
 
 const userSelect = {
@@ -36,6 +42,8 @@ const userSelect = {
   isActive: true,
   liveLocationEnabled: true,
   liveLocationVisible: true,
+  canSendLiveCamera: true,
+  visibleInControlRoom: true,
   createdAt: true,
   updatedAt: true,
   trustedDevice: {
@@ -81,6 +89,8 @@ usersRouter.post(
         isActive: req.body.isActive,
         liveLocationEnabled: req.body.liveLocationEnabled,
         liveLocationVisible: req.body.liveLocationVisible,
+        canSendLiveCamera: req.body.canSendLiveCamera,
+        visibleInControlRoom: req.body.visibleInControlRoom,
         passwordHash
       },
       select: userSelect
@@ -97,6 +107,49 @@ usersRouter.patch(
   asyncHandler(async (req, res) => {
     const data: Record<string, unknown> = { ...req.body };
     const userId = z.string().uuid().parse(req.params.id);
+    const existing = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        liveLocationEnabled: true,
+        liveLocationVisible: true,
+        canSendLiveCamera: true,
+        visibleInControlRoom: true
+      }
+    });
+
+    if (!existing) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    const disableTrackingSender = req.body.liveLocationEnabled === false && existing.liveLocationEnabled;
+    const hideFromLiveMap = req.body.liveLocationVisible === false && existing.liveLocationVisible;
+    const disableCameraSender = req.body.canSendLiveCamera === false && existing.canSendLiveCamera;
+    const hideFromControlRoom = req.body.visibleInControlRoom === false && existing.visibleInControlRoom;
+
+    const activeSessionsBeforeDisable = disableTrackingSender
+      ? await prisma.locationSharingSession.findMany({
+          where: {
+            userId,
+            isActive: true
+          },
+          select: {
+            id: true
+          }
+        })
+      : [];
+    const activeCameraSessionsBeforeDisable = disableCameraSender || hideFromControlRoom
+      ? await prisma.liveCameraSession.findMany({
+          where: {
+            userId,
+            isActive: true
+          },
+          select: {
+            id: true
+          }
+        })
+      : [];
+
     if (req.body.password) {
       data.passwordHash = await bcrypt.hash(req.body.password, 10);
       delete data.password;
@@ -108,7 +161,7 @@ usersRouter.patch(
       select: userSelect
     });
 
-    if (req.body.liveLocationEnabled === false) {
+    if (disableTrackingSender) {
       const now = new Date();
       await prisma.locationSharingSession.updateMany({
         where: {
@@ -132,6 +185,66 @@ usersRouter.patch(
           isSharing: false
         }
       });
+
+      await writeTrackingEvent({
+        userId,
+        actorUserId: req.user!.id,
+        eventType: "TRACKING_SENDER_DISABLED",
+        eventSummary: "Live tracking sender disabled by admin."
+      });
+
+      for (const session of activeSessionsBeforeDisable) {
+        await writeTrackingEvent({
+          userId,
+          actorUserId: req.user!.id,
+          eventType: "LIVE_TRACKING_STOPPED",
+          eventSummary: "Live tracking session stopped because sender was disabled.",
+          relatedSessionId: session.id,
+          metadata: {
+            stoppedReason: "LIVE_TRACKING_DISABLED"
+          }
+        });
+      }
+    }
+
+    if (hideFromLiveMap) {
+      await writeTrackingEvent({
+        userId,
+        actorUserId: req.user!.id,
+        eventType: "USER_HIDDEN_FROM_MAP",
+        eventSummary: "User hidden from live map by admin."
+      });
+    }
+
+    if (disableCameraSender || hideFromControlRoom) {
+      const now = new Date();
+      await prisma.liveCameraSession.updateMany({
+        where: {
+          userId,
+          isActive: true
+        },
+        data: {
+          isActive: false,
+          endedAt: now,
+          sessionStatus: LiveCameraSessionStatus.ENDED
+        }
+      });
+
+      for (const session of activeCameraSessionsBeforeDisable) {
+        await writeLiveCameraEvent({
+          userId,
+          actorUserId: req.user!.id,
+          eventType: "CAMERA_SESSION_STOPPED",
+          eventSummary: disableCameraSender
+            ? "Camera session stopped because camera sender permission was disabled."
+            : "Camera session stopped because user was hidden from Control Room.",
+          liveCameraSessionId: session.id,
+          metadata: {
+            stoppedReason: disableCameraSender ? "CAMERA_SENDER_DISABLED" : "HIDDEN_FROM_CONTROL_ROOM",
+            stoppedAt: now.toISOString()
+          }
+        });
+      }
     }
 
     await writeAudit(req.user!.id, "UPDATE", "User", user.id);
@@ -169,6 +282,25 @@ usersRouter.post(
       });
     }
 
+    const activeSessions = await prisma.locationSharingSession.findMany({
+      where: {
+        userId,
+        isActive: true
+      },
+      select: {
+        id: true
+      }
+    });
+    const activeCameraSessions = await prisma.liveCameraSession.findMany({
+      where: {
+        userId,
+        isActive: true
+      },
+      select: {
+        id: true
+      }
+    });
+
     await prisma.locationSharingSession.updateMany({
       where: {
         userId,
@@ -191,8 +323,53 @@ usersRouter.post(
         isSharing: false
       }
     });
+    await prisma.liveCameraSession.updateMany({
+      where: {
+        userId,
+        isActive: true
+      },
+      data: {
+        isActive: false,
+        endedAt: now,
+        sessionStatus: LiveCameraSessionStatus.ENDED
+      }
+    });
 
     await writeAudit(req.user!.id, "RESET_TRUSTED_DEVICE", "User", userId);
+    await writeTrackingEvent({
+      userId,
+      actorUserId: req.user!.id,
+      eventType: "TRUSTED_DEVICE_RESET",
+      eventSummary: "Trusted device reset by admin.",
+      relatedTrustedDeviceId: trustedDevice?.id ?? null
+    });
+
+    for (const session of activeSessions) {
+      await writeTrackingEvent({
+        userId,
+        actorUserId: req.user!.id,
+        eventType: "LIVE_TRACKING_STOPPED",
+        eventSummary: "Live tracking session stopped after trusted device reset.",
+        relatedSessionId: session.id,
+        metadata: {
+          stoppedReason: "TRUSTED_DEVICE_RESET"
+        }
+      });
+    }
+    for (const session of activeCameraSessions) {
+      await writeLiveCameraEvent({
+        userId,
+        actorUserId: req.user!.id,
+        eventType: "CAMERA_SESSION_STOPPED",
+        eventSummary: "Camera session stopped after trusted device reset.",
+        liveCameraSessionId: session.id,
+        metadata: {
+          stoppedReason: "TRUSTED_DEVICE_RESET",
+          stoppedAt: now.toISOString()
+        }
+      });
+    }
+
     return res.json({
       userId,
       resetAt: now,
