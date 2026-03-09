@@ -1,1 +1,1 @@
-window.__APP_CONFIG__ = { apiBaseUrl: "http://192.168.0.105:4000" };
+window.__APP_CONFIG__ = window.__APP_CONFIG__ || {};

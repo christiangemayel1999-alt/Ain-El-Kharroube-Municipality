@@ -113,7 +113,7 @@ type SelectCause = "MAP" | "SWITCH" | "SELECT";
           <h3>Live camera tiles</h3>
           <div class="tile-list" *ngIf="leftTiles().length; else noTiles">
             <article
-              *ngFor="let session of leftTiles()"
+              *ngFor="let session of leftTiles(); trackBy: trackBySessionId"
               class="camera-tile"
               [class.selected]="isSelected(session.id)"
             >
@@ -291,7 +291,11 @@ type SelectCause = "MAP" | "SWITCH" | "SELECT";
       </section>
 
       <section class="right-tiles" *ngIf="rightTiles().length">
-        <article *ngFor="let session of rightTiles()" class="camera-tile" [class.selected]="isSelected(session.id)">
+        <article
+          *ngFor="let session of rightTiles(); trackBy: trackBySessionId"
+          class="camera-tile"
+          [class.selected]="isSelected(session.id)"
+        >
           <header>
             <strong>{{ session.user.fullName }}</strong>
             <span class="badge" [class]="tileStateClass(session)">{{ tileState(session) }}</span>
@@ -762,6 +766,10 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
   rightTiles() {
     const sessions = this.overview()?.cameraSessions ?? [];
     return sessions.filter((_, index) => index % 2 !== 0);
+  }
+
+  trackBySessionId(_index: number, session: LiveCameraSessionRecord) {
+    return session.id;
   }
 
   selectedSession() {

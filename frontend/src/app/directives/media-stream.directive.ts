@@ -54,7 +54,7 @@ export class MediaStreamDirective implements OnChanges, OnDestroy {
     if (video.srcObject !== stream) {
       video.srcObject = stream;
     }
-    const srcObjectBound = video.srcObject === stream && hasStream;
+    const srcObjectBound = this.isBoundToStream(video.srcObject, stream);
 
     if (!stream) {
       video.pause();
@@ -103,6 +103,22 @@ export class MediaStreamDirective implements OnChanges, OnDestroy {
         streamId: stream.id
       });
     }
+  }
+
+  private isBoundToStream(bound: unknown, stream: MediaStream | null) {
+    if (!stream || !bound) {
+      return false;
+    }
+
+    if (bound === stream) {
+      return true;
+    }
+
+    if (bound instanceof MediaStream) {
+      return bound.id === stream.id;
+    }
+
+    return false;
   }
 
   private emitState(

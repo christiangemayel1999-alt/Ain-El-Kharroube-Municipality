@@ -416,17 +416,28 @@ export class LiveCameraService {
       return;
     }
 
+    const current = this.viewerDiagnostics()[sessionId] ?? this.createViewerDiagnostics(sessionId);
+    const nextSrcObjectBound = state.hasStream ? state.srcObjectBound : current.srcObjectBound;
+    const nextRemoteVideoTrackPresent = state.hasStream
+      ? state.remoteVideoTrackPresent
+      : current.remoteVideoTrackPresent;
+    const nextPlayError = state.playAttempted
+      ? state.playSucceeded
+        ? null
+        : state.playError
+      : current.playError;
+
     this.updateViewerDiagnostics(sessionId, {
-      srcObjectBound: state.srcObjectBound,
-      remoteVideoTrackPresent: state.remoteVideoTrackPresent,
-      playError: state.playSucceeded ? null : state.playError,
+      srcObjectBound: nextSrcObjectBound,
+      remoteVideoTrackPresent: nextRemoteVideoTrackPresent,
+      playError: nextPlayError,
       lastRebindCause: scope.toUpperCase()
     });
 
     this.diag("viewer.media", "video-element-state", {
       sessionId,
       scope,
-      srcObjectBound: state.srcObjectBound,
+      srcObjectBound: nextSrcObjectBound,
       playSucceeded: state.playSucceeded,
       playError: state.playError
     });
@@ -447,6 +458,7 @@ export class LiveCameraService {
       signalingState: peer.signalingState,
       remoteStreamCreated: false,
       remoteVideoTrackPresent: false,
+      srcObjectBound: false,
       playError: null
     });
 
