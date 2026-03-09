@@ -480,6 +480,47 @@ function handleSenderAnswer(client: SignalClient, message: WireMessage) {
   });
 }
 
+function handleSenderOfferReceivedAck(client: SignalClient, message: WireMessage) {
+  if (client.mode !== "SENDER") {
+    sendError(client, "Only sender sockets can acknowledge viewer offers.", "BAD_MODE");
+    return;
+  }
+
+  const sessionId = asText(message.sessionId);
+  const targetUserId = asText(message.targetUserId);
+  const viewerUserId = asText(message.viewerUserId);
+  const viewerPeerId = asText(message.viewerPeerId);
+
+  if (!sessionId || !targetUserId || !viewerUserId || !viewerPeerId) {
+    sendError(
+      client,
+      "sessionId, targetUserId, viewerUserId and viewerPeerId are required for offer acknowledgement.",
+      "INVALID_PAYLOAD"
+    );
+    return;
+  }
+
+  if (client.userId !== targetUserId || client.registeredSessionId !== sessionId) {
+    sendError(client, "Sender is not authorized for this session.", "UNAUTHORIZED");
+    return;
+  }
+
+  forwardToViewers(viewerUserId, {
+    type: "SENDER_OFFER_RECEIVED",
+    sessionId,
+    targetUserId,
+    viewerUserId,
+    viewerPeerId
+  });
+
+  logDiag("signal", "sender-offer-received-ack-forwarded", {
+    sessionId,
+    targetUserId,
+    viewerUserId,
+    viewerPeerId
+  });
+}
+
 function handleIceCandidate(client: SignalClient, message: WireMessage) {
   const sessionId = asText(message.sessionId);
   const targetUserId = asText(message.targetUserId);
@@ -634,6 +675,10 @@ async function handleIncomingMessage(client: SignalClient, raw: RawData) {
     }
     case "SENDER_ANSWER": {
       handleSenderAnswer(client, message);
+      return;
+    }
+    case "SENDER_OFFER_RECEIVED": {
+      handleSenderOfferReceivedAck(client, message);
       return;
     }
     case "ICE_CANDIDATE": {

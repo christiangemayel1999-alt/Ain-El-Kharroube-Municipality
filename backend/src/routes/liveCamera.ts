@@ -12,7 +12,7 @@ import { requireRoles } from "../middleware/rbac";
 import { validateBody, validateQuery } from "../middleware/validate";
 import { computeTrackingHealthState } from "../services/trackingPing";
 import { writeLiveCameraEvent } from "../services/liveCameraAudit";
-import { getLiveCameraIceConfig } from "../services/liveCameraIce";
+import { getLiveCameraIceConfig, getLiveCameraIceDebugSummary } from "../services/liveCameraIce";
 import { invalidateLiveCameraSessionSignaling } from "../services/liveCameraSignaling";
 import { asyncHandler } from "../utils/asyncHandler";
 
@@ -170,6 +170,14 @@ liveCameraRouter.get(
     }
 
     return res.json(getLiveCameraIceConfig());
+  })
+);
+
+liveCameraRouter.get(
+  "/ice-config/debug",
+  requireRoles(...CONTROL_ROOM_VIEW_ROLES),
+  asyncHandler(async (_req, res) => {
+    return res.json(getLiveCameraIceDebugSummary());
   })
 );
 

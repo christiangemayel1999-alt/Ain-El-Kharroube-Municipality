@@ -6,6 +6,7 @@ import {
   ControlRoomOverviewResponse,
   LiveCameraEventType,
   LiveCameraIceConfig,
+  LiveCameraIceDebugSummary,
   LiveCameraLogsResponse,
   LiveCameraSessionRecord,
   LiveCameraSessionStatus,
@@ -299,6 +300,10 @@ export class ApiService {
 
   getLiveCameraIceConfig() {
     return this.http.get<LiveCameraIceConfig>(`${environment.apiBaseUrl}/live-camera/ice-config`);
+  }
+
+  getLiveCameraIceConfigDebug() {
+    return this.http.get<LiveCameraIceDebugSummary>(`${environment.apiBaseUrl}/live-camera/ice-config/debug`);
   }
 
   stopLiveCameraSession(sessionId: string, reason?: string) {

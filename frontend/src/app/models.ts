@@ -650,6 +650,31 @@ export interface LiveCameraIceConfig {
   iceTransportPolicy?: "all" | "relay";
 }
 
+export type LiveCameraIceConfigSource = "backend" | "frontend-fallback";
+
+export interface LiveCameraIceRuntimeSummary {
+  iceConfigSource: LiveCameraIceConfigSource;
+  frontendFallbackUsed: boolean;
+  turnPresent: boolean;
+  turnCredentialsPresent: boolean;
+  iceTransportPolicy: "all" | "relay";
+  stunUrls: string[];
+  turnUrls: string[];
+}
+
+export interface LiveCameraIceDebugSummary {
+  backendIceConfigLoaded: boolean;
+  iceConfigSource: "env" | "fallback";
+  configuredIceServersCount: number;
+  stunUrls: string[];
+  turnUrls: string[];
+  turnPresent: boolean;
+  turnCredentialsPresent: boolean;
+  iceTransportPolicy: "all" | "relay";
+  fallbackStunOnlyMode: boolean;
+  warnings: string[];
+}
+
 export interface LiveCameraLogRow {
   id: string;
   userId: string;

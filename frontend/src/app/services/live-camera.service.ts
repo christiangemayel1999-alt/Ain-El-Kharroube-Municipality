@@ -2,7 +2,13 @@ import { Injectable, signal } from "@angular/core";
 import { firstValueFrom } from "rxjs";
 import { environment } from "../../environments/environment";
 import { MediaStreamBindingState } from "../directives/media-stream.directive";
-import { LiveCameraIceConfig, LiveCameraSessionRecord, LiveCameraSessionStatus } from "../models";
+import {
+  LiveCameraIceConfig,
+  LiveCameraIceConfigSource,
+  LiveCameraIceRuntimeSummary,
+  LiveCameraSessionRecord,
+  LiveCameraSessionStatus
+} from "../models";
 import { ApiService } from "./api.service";
 import { AuthService } from "./auth.service";
 
@@ -26,7 +32,20 @@ type ViewerPeerDiagnostics = {
   srcObjectBound: boolean;
   playError: string | null;
   bytesReceived: number | null;
+  packetsReceived: number | null;
+  framesReceived: number | null;
+  framesDecoded: number | null;
   selectedIceCandidateType: string | null;
+  turnPresent: boolean;
+  iceConfigSource: LiveCameraIceConfigSource;
+  iceTransportPolicy: "all" | "relay";
+  signalingOfferCreated: boolean;
+  signalingOfferSent: boolean;
+  signalingSenderReceivedOffer: boolean;
+  signalingAnswerReceived: boolean;
+  signalingAnswerApplied: boolean;
+  signalingIceCandidatesReceived: number | null;
+  lastSignalingError: string | null;
   lastRebindCause: string | null;
   lastUpdatedAt: string;
 };
@@ -91,6 +110,7 @@ export class LiveCameraService {
   readonly viewerErrors = signal<Record<string, string>>({});
   readonly viewerConnected = signal(false);
   readonly viewerDiagnostics = signal<Record<string, ViewerPeerDiagnostics>>({});
+  readonly iceRuntimeSummary = signal<LiveCameraIceRuntimeSummary>(DEFAULT_ICE_RUNTIME_SUMMARY);
 
   constructor(
     private readonly api: ApiService,
@@ -286,6 +306,7 @@ export class LiveCameraService {
   async connectViewerSignaling() {
     this.explicitViewerSocketClose = false;
     await this.ensureViewerSocket();
+    await this.getRtcConfiguration();
   }
 
   disconnectViewerSignaling() {
@@ -448,6 +469,7 @@ export class LiveCameraService {
 
   private async openViewerPeer(session: LiveCameraSessionRecord) {
     const config = await this.getRtcConfiguration();
+    const iceSummary = this.iceRuntimeSummary();
     const viewerPeerId = this.createViewerPeerId(session.id);
     const peer = new RTCPeerConnection(config);
     this.viewerPeerConnections.set(session.id, peer);
@@ -463,7 +485,17 @@ export class LiveCameraService {
       remoteStreamCreated: false,
       remoteVideoTrackPresent: false,
       srcObjectBound: false,
-      playError: null
+      playError: null,
+      turnPresent: iceSummary.turnPresent,
+      iceConfigSource: iceSummary.iceConfigSource,
+      iceTransportPolicy: iceSummary.iceTransportPolicy,
+      signalingOfferCreated: false,
+      signalingOfferSent: false,
+      signalingSenderReceivedOffer: false,
+      signalingAnswerReceived: false,
+      signalingAnswerApplied: false,
+      signalingIceCandidatesReceived: 0,
+      lastSignalingError: null
     });
 
     this.diag("viewer.peer", "peer-created", {
@@ -599,16 +631,43 @@ export class LiveCameraService {
       }
     };
 
-    const offer = await peer.createOffer();
-    await peer.setLocalDescription(offer);
+    try {
+      const offer = await peer.createOffer();
+      this.updateViewerDiagnostics(session.id, {
+        signalingOfferCreated: true
+      });
 
-    this.sendToViewerSocket({
-      type: "VIEWER_OFFER",
-      sessionId: session.id,
-      targetUserId: session.userId,
-      viewerPeerId,
-      sdp: offer
-    });
+      await peer.setLocalDescription(offer);
+
+      const sent = this.sendToViewerSocket({
+        type: "VIEWER_OFFER",
+        sessionId: session.id,
+        targetUserId: session.userId,
+        viewerPeerId,
+        sdp: offer
+      });
+      if (!sent) {
+        throw new Error("Viewer signaling socket is not connected.");
+      }
+      this.updateViewerDiagnostics(session.id, {
+        signalingOfferSent: true
+      });
+    } catch (error) {
+      const message = String((error as { message?: string })?.message ?? "Could not create/send viewer offer.");
+      this.updateViewerDiagnostics(session.id, {
+        lastSignalingError: message
+      });
+      this.viewerErrors.update((rows) => ({
+        ...rows,
+        [session.id]: `Viewer offer failed: ${message}`
+      }));
+      this.diag("viewer.signal", "offer-create-or-send-failed", {
+        sessionId: session.id,
+        viewerPeerId,
+        error: message
+      });
+      throw error;
+    }
 
     firstValueFrom(
       this.api.logLiveCameraViewerEvent({
@@ -640,25 +699,14 @@ export class LiveCameraService {
     this.clearViewerReconnectTimer(sessionId);
     this.stopViewerStatsPolling(sessionId);
 
+    this.updateViewerDiagnostics(sessionId, {
+      socketConnected: this.viewerConnected(),
+      connectionState: "closed",
+      iceConnectionState: "closed",
+      signalingState: "closed"
+    });
+
     this.viewerStreams.update((rows) => {
-      const next = { ...rows };
-      delete next[sessionId];
-      return next;
-    });
-
-    this.viewerSessionState.update((rows) => {
-      const next = { ...rows };
-      delete next[sessionId];
-      return next;
-    });
-
-    this.viewerErrors.update((rows) => {
-      const next = { ...rows };
-      delete next[sessionId];
-      return next;
-    });
-
-    this.viewerDiagnostics.update((rows) => {
       const next = { ...rows };
       delete next[sessionId];
       return next;
@@ -859,6 +907,10 @@ export class LiveCameraService {
         explicit: wasExplicit
       });
 
+      if (!wasExplicit) {
+        this.markViewerSignalingErrorForAll("Viewer signaling socket closed.");
+      }
+
       this.viewerDiagnostics.update((rows) => {
         const next = { ...rows };
         for (const [sessionId, diagnostic] of Object.entries(next)) {
@@ -903,16 +955,18 @@ export class LiveCameraService {
 
   private sendToSenderSocket(payload: SignalMessage) {
     if (!this.senderSocket || this.senderSocket.readyState !== WebSocket.OPEN) {
-      return;
+      return false;
     }
     this.senderSocket.send(JSON.stringify(payload));
+    return true;
   }
 
   private sendToViewerSocket(payload: SignalMessage) {
     if (!this.viewerSocket || this.viewerSocket.readyState !== WebSocket.OPEN) {
-      return;
+      return false;
     }
     this.viewerSocket.send(JSON.stringify(payload));
+    return true;
   }
 
   private handleSenderSignal(raw: unknown) {
@@ -1008,6 +1062,14 @@ export class LiveCameraService {
     if (currentSession.id !== sessionId || currentSession.userId !== targetUserId) {
       return;
     }
+
+    this.sendToSenderSocket({
+      type: "SENDER_OFFER_RECEIVED",
+      sessionId,
+      targetUserId,
+      viewerUserId,
+      viewerPeerId
+    });
 
     const key = `${viewerUserId}:${viewerPeerId}` as SenderPeerKey;
     this.closeSenderPeer(key);
@@ -1117,6 +1179,33 @@ export class LiveCameraService {
       return;
     }
 
+    if (message["type"] === "SENDER_OFFER_RECEIVED") {
+      const sessionId = String(message["sessionId"] ?? "");
+      const viewerPeerId = String(message["viewerPeerId"] ?? "");
+      if (!sessionId || !viewerPeerId) {
+        return;
+      }
+
+      const expectedViewerPeerId = this.viewerPeerIdsBySession.get(sessionId);
+      if (!expectedViewerPeerId || viewerPeerId !== expectedViewerPeerId) {
+        this.diag("viewer.signal", "stale-offer-received-ack-ignored", {
+          sessionId,
+          viewerPeerId,
+          expectedViewerPeerId: expectedViewerPeerId ?? null
+        });
+        return;
+      }
+
+      this.updateViewerDiagnostics(sessionId, {
+        signalingSenderReceivedOffer: true
+      });
+      this.diag("viewer.signal", "sender-received-offer", {
+        sessionId,
+        viewerPeerId
+      });
+      return;
+    }
+
     if (message["type"] === "SENDER_ANSWER") {
       const sessionId = String(message["sessionId"] ?? "");
       const viewerPeerId = String(message["viewerPeerId"] ?? "");
@@ -1140,18 +1229,31 @@ export class LiveCameraService {
         return;
       }
 
-      void peer.setRemoteDescription(new RTCSessionDescription(sdp)).catch((error) => {
-        const message = String((error as { message?: string })?.message ?? "Could not apply sender answer.");
-        this.viewerErrors.update((rows) => ({
-          ...rows,
-          [sessionId]: `Failed to apply sender SDP answer: ${message}`
-        }));
-        this.diag("viewer.signal", "set-remote-description-failed", {
-          sessionId,
-          viewerPeerId,
-          error: message
-        });
+      this.updateViewerDiagnostics(sessionId, {
+        signalingAnswerReceived: true
       });
+
+      void peer.setRemoteDescription(new RTCSessionDescription(sdp))
+        .then(() => {
+          this.updateViewerDiagnostics(sessionId, {
+            signalingAnswerApplied: true
+          });
+        })
+        .catch((error) => {
+          const message = String((error as { message?: string })?.message ?? "Could not apply sender answer.");
+          this.updateViewerDiagnostics(sessionId, {
+            lastSignalingError: message
+          });
+          this.viewerErrors.update((rows) => ({
+            ...rows,
+            [sessionId]: `Failed to apply sender SDP answer: ${message}`
+          }));
+          this.diag("viewer.signal", "set-remote-description-failed", {
+            sessionId,
+            viewerPeerId,
+            error: message
+          });
+        });
       return;
     }
 
@@ -1178,8 +1280,13 @@ export class LiveCameraService {
         return;
       }
 
+      this.incrementViewerIceCandidatesReceived(sessionId);
+
       void peer.addIceCandidate(new RTCIceCandidate(candidate)).catch((error) => {
         const message = String((error as { message?: string })?.message ?? "Could not apply ICE candidate.");
+        this.updateViewerDiagnostics(sessionId, {
+          lastSignalingError: message
+        });
         this.viewerErrors.update((rows) => ({
           ...rows,
           [sessionId]: `Failed to apply sender ICE candidate: ${message}`
@@ -1235,6 +1342,7 @@ export class LiveCameraService {
         ...rows,
         _global: text
       }));
+      this.markViewerSignalingErrorForAll(text);
 
       this.diag("viewer.socket", "error", {
         message: text,
@@ -1263,7 +1371,10 @@ export class LiveCameraService {
 
     this.rtcConfigurationPromise = firstValueFrom(this.api.getLiveCameraIceConfig())
       .then((config) => this.normalizeRtcConfiguration(config))
-      .catch(() => this.defaultRtcConfiguration());
+      .catch((error) => {
+        const message = this.extractApiMessage(error, "Failed to load ICE config from backend.");
+        return this.defaultRtcConfiguration(`Frontend fallback in use (${message})`);
+      });
 
     return this.rtcConfigurationPromise;
   }
@@ -1288,20 +1399,141 @@ export class LiveCameraService {
       .filter((server): server is RTCIceServer => Boolean(server));
 
     if (!servers.length) {
-      return this.defaultRtcConfiguration();
+      return this.defaultRtcConfiguration("Frontend fallback in use (backend returned no valid ICE servers).");
     }
+
+    const iceTransportPolicy = config?.iceTransportPolicy === "relay" ? "relay" : "all";
+    this.setRuntimeIceSummary(
+      this.buildIceRuntimeSummary(servers, {
+        source: "backend",
+        iceTransportPolicy
+      })
+    );
 
     return {
       iceServers: servers,
-      iceTransportPolicy: config?.iceTransportPolicy === "relay" ? "relay" : "all"
+      iceTransportPolicy
     };
   }
 
-  private defaultRtcConfiguration(): RTCConfiguration {
-    return {
+  private defaultRtcConfiguration(reason?: string): RTCConfiguration {
+    const fallback: RTCConfiguration = {
       iceServers: [{ urls: ["stun:stun.l.google.com:19302"] }],
       iceTransportPolicy: "all"
     };
+    this.setRuntimeIceSummary(
+      this.buildIceRuntimeSummary(fallback.iceServers ?? [], {
+        source: "frontend-fallback",
+        iceTransportPolicy: "all"
+      }),
+      reason
+    );
+    return fallback;
+  }
+
+  private setRuntimeIceSummary(summary: LiveCameraIceRuntimeSummary, warningMessage?: string) {
+    this.iceRuntimeSummary.set(summary);
+
+    this.viewerDiagnostics.update((rows) => {
+      const next = { ...rows };
+      for (const [sessionId, diagnostics] of Object.entries(next)) {
+        next[sessionId] = {
+          ...diagnostics,
+          turnPresent: summary.turnPresent,
+          iceConfigSource: summary.iceConfigSource,
+          iceTransportPolicy: summary.iceTransportPolicy,
+          lastUpdatedAt: new Date().toISOString()
+        };
+      }
+      return next;
+    });
+
+    this.diag("ice.config", "runtime-loaded", {
+      source: summary.iceConfigSource,
+      frontendFallbackUsed: summary.frontendFallbackUsed,
+      turnPresent: summary.turnPresent,
+      turnCredentialsPresent: summary.turnCredentialsPresent,
+      transportPolicy: summary.iceTransportPolicy,
+      stunUrls: summary.stunUrls,
+      turnUrls: summary.turnUrls
+    });
+
+    if (summary.frontendFallbackUsed) {
+      console.warn(`[live-camera][ice] ${warningMessage ?? "Frontend fallback STUN-only ICE config is active."}`);
+    }
+
+    if (summary.iceConfigSource === "backend" && !summary.turnPresent) {
+      console.warn("[live-camera][ice] Backend ICE config is STUN-only (no TURN URLs); cross-network streaming may fail.");
+    }
+
+    if (summary.turnPresent && !summary.turnCredentialsPresent) {
+      console.warn("[live-camera][ice] TURN URLs detected, but TURN credentials are missing in runtime ICE config.");
+    }
+  }
+
+  private buildIceRuntimeSummary(
+    servers: RTCIceServer[],
+    options: { source: LiveCameraIceConfigSource; iceTransportPolicy: "all" | "relay" }
+  ): LiveCameraIceRuntimeSummary {
+    const stunUrls = new Set<string>();
+    const turnUrls = new Set<string>();
+    let turnCredentialsPresent = false;
+
+    for (const server of servers) {
+      const urls = this.normalizeIceUrls(server.urls);
+      const hasUsername = typeof server.username === "string" && server.username.trim().length > 0;
+      const hasCredential =
+        (typeof server.credential === "string" && server.credential.trim().length > 0) ||
+        (server.credential != null && typeof server.credential !== "string");
+      const serverHasTurnCredentials = hasUsername && hasCredential;
+
+      for (const url of urls) {
+        if (this.isStunUrl(url)) {
+          stunUrls.add(url);
+          continue;
+        }
+        if (this.isTurnUrl(url)) {
+          turnUrls.add(this.redactIceUrl(url));
+          if (serverHasTurnCredentials) {
+            turnCredentialsPresent = true;
+          }
+        }
+      }
+    }
+
+    return {
+      iceConfigSource: options.source,
+      frontendFallbackUsed: options.source === "frontend-fallback",
+      turnPresent: turnUrls.size > 0,
+      turnCredentialsPresent,
+      iceTransportPolicy: options.iceTransportPolicy,
+      stunUrls: [...stunUrls],
+      turnUrls: [...turnUrls]
+    };
+  }
+
+  private normalizeIceUrls(urls: string | string[]) {
+    const list = Array.isArray(urls) ? urls : [urls];
+    return list.map((value) => String(value).trim()).filter((value) => value.length > 0);
+  }
+
+  private isTurnUrl(url: string) {
+    const scheme = this.getIceUrlScheme(url);
+    return scheme === "turn" || scheme === "turns";
+  }
+
+  private isStunUrl(url: string) {
+    const scheme = this.getIceUrlScheme(url);
+    return scheme === "stun" || scheme === "stuns";
+  }
+
+  private getIceUrlScheme(url: string) {
+    const match = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(url.trim());
+    return match ? match[1].toLowerCase() : "";
+  }
+
+  private redactIceUrl(url: string) {
+    return url.replace(/^((?:turn|turns):)[^@/\s]+@/i, "$1***@");
   }
 
   private clearViewerTrackWaitTimer(sessionId: string) {
@@ -1631,6 +1863,7 @@ export class LiveCameraService {
   }
 
   private createViewerDiagnostics(sessionId: string): ViewerPeerDiagnostics {
+    const iceSummary = this.iceRuntimeSummary();
     return {
       sessionId,
       socketConnected: this.viewerConnected(),
@@ -1642,7 +1875,20 @@ export class LiveCameraService {
       srcObjectBound: false,
       playError: null,
       bytesReceived: null,
+      packetsReceived: null,
+      framesReceived: null,
+      framesDecoded: null,
       selectedIceCandidateType: null,
+      turnPresent: iceSummary.turnPresent,
+      iceConfigSource: iceSummary.iceConfigSource,
+      iceTransportPolicy: iceSummary.iceTransportPolicy,
+      signalingOfferCreated: false,
+      signalingOfferSent: false,
+      signalingSenderReceivedOffer: false,
+      signalingAnswerReceived: false,
+      signalingAnswerApplied: false,
+      signalingIceCandidatesReceived: null,
+      lastSignalingError: null,
       lastRebindCause: null,
       lastUpdatedAt: new Date().toISOString()
     };
@@ -1659,6 +1905,35 @@ export class LiveCameraService {
           lastUpdatedAt: new Date().toISOString()
         }
       };
+    });
+  }
+
+  private incrementViewerIceCandidatesReceived(sessionId: string) {
+    this.viewerDiagnostics.update((rows) => {
+      const current = rows[sessionId] ?? this.createViewerDiagnostics(sessionId);
+      const currentCount = current.signalingIceCandidatesReceived ?? 0;
+      return {
+        ...rows,
+        [sessionId]: {
+          ...current,
+          signalingIceCandidatesReceived: currentCount + 1,
+          lastUpdatedAt: new Date().toISOString()
+        }
+      };
+    });
+  }
+
+  private markViewerSignalingErrorForAll(message: string) {
+    this.viewerDiagnostics.update((rows) => {
+      const next = { ...rows };
+      for (const [sessionId, diagnostics] of Object.entries(next)) {
+        next[sessionId] = {
+          ...diagnostics,
+          lastSignalingError: message,
+          lastUpdatedAt: new Date().toISOString()
+        };
+      }
+      return next;
     });
   }
 
@@ -1694,9 +1969,13 @@ export class LiveCameraService {
 
     try {
       const stats = await peer.getStats();
-      const { bytesReceived, selectedIceCandidateType } = this.extractViewerStats(stats);
+      const { bytesReceived, packetsReceived, framesReceived, framesDecoded, selectedIceCandidateType } =
+        this.extractViewerStats(stats);
       this.updateViewerDiagnostics(sessionId, {
         bytesReceived,
+        packetsReceived,
+        framesReceived,
+        framesDecoded,
         selectedIceCandidateType,
         connectionState: peer.connectionState,
         iceConnectionState: peer.iceConnectionState,
@@ -1709,6 +1988,9 @@ export class LiveCameraService {
 
   private extractViewerStats(stats: RTCStatsReport) {
     let bytesReceived: number | null = null;
+    let packetsReceived: number | null = null;
+    let framesReceived: number | null = null;
+    let framesDecoded: number | null = null;
     let selectedPairId: string | null = null;
     let selectedIceCandidateType: string | null = null;
 
@@ -1717,18 +1999,37 @@ export class LiveCameraService {
         type: string;
         selectedCandidatePairId?: string;
         kind?: string;
+        mediaType?: string;
         isRemote?: boolean;
         bytesReceived?: number;
+        packetsReceived?: number;
+        framesReceived?: number;
+        framesDecoded?: number;
       };
 
       if (report.type === "transport" && typeof report.selectedCandidatePairId === "string") {
         selectedPairId = report.selectedCandidatePairId;
       }
 
-      if (report.type === "inbound-rtp" && report.kind === "video" && report.isRemote !== true) {
+      const videoInbound =
+        report.type === "inbound-rtp" && (report.kind === "video" || report.mediaType === "video");
+      if (videoInbound && report.isRemote !== true) {
         const nextBytes = typeof report.bytesReceived === "number" ? report.bytesReceived : null;
+        const nextPackets = typeof report.packetsReceived === "number" ? report.packetsReceived : null;
+        const nextFramesReceived = typeof report.framesReceived === "number" ? report.framesReceived : null;
+        const nextFramesDecoded = typeof report.framesDecoded === "number" ? report.framesDecoded : null;
+
         if (nextBytes != null && (bytesReceived == null || nextBytes > bytesReceived)) {
           bytesReceived = nextBytes;
+        }
+        if (nextPackets != null && (packetsReceived == null || nextPackets > packetsReceived)) {
+          packetsReceived = nextPackets;
+        }
+        if (nextFramesReceived != null && (framesReceived == null || nextFramesReceived > framesReceived)) {
+          framesReceived = nextFramesReceived;
+        }
+        if (nextFramesDecoded != null && (framesDecoded == null || nextFramesDecoded > framesDecoded)) {
+          framesDecoded = nextFramesDecoded;
         }
       }
     });
@@ -1766,6 +2067,9 @@ export class LiveCameraService {
 
     return {
       bytesReceived,
+      packetsReceived,
+      framesReceived,
+      framesDecoded,
       selectedIceCandidateType
     };
   }
@@ -1828,6 +2132,16 @@ export class LiveCameraService {
     return String(err?.error?.message ?? err?.message ?? fallback);
   }
 }
+
+const DEFAULT_ICE_RUNTIME_SUMMARY: LiveCameraIceRuntimeSummary = {
+  iceConfigSource: "frontend-fallback",
+  frontendFallbackUsed: true,
+  turnPresent: false,
+  turnCredentialsPresent: false,
+  iceTransportPolicy: "all",
+  stunUrls: ["stun:stun.l.google.com:19302"],
+  turnUrls: []
+};
 
 const TERMINAL_STATES = new Set<LiveCameraSessionStatus>([
   "ENDED",

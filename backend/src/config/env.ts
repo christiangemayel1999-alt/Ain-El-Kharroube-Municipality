@@ -15,7 +15,7 @@ const envSchema = z.object({
   WEB_PUSH_VAPID_PRIVATE_KEY: z.string().optional(),
   WEB_PUSH_SUBJECT: z.string().optional(),
   LIVE_CAMERA_ICE_SERVERS_JSON: z.string().optional(),
-  LIVE_CAMERA_ICE_TRANSPORT_POLICY: z.enum(["all", "relay"]).optional()
+  LIVE_CAMERA_ICE_TRANSPORT_POLICY: z.string().optional()
 });
 
 export const env = envSchema.parse(process.env);

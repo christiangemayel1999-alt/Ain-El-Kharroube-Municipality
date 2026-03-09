@@ -1,0 +1,512 @@
+﻿<div class="command-shell" [class.emergency-mode]="isEmergencyMode()">
+  <header class="command-header" *ngIf="overview() as o">
+    <div class="title-wrap">
+      <h2>Command Center / Control Room Pro</h2>
+      <p>Live operations: map, streams, incidents, dispatch actions, and diagnostics.</p>
+    </div>
+    <div class="clock-wrap">
+      <div class="clock">{{ nowLabel() }}</div>
+      <div class="health-row">
+        <span class="health-pill" [class.ok]="camera.viewerConnected()" [class.bad]="!camera.viewerConnected()">
+          signaling {{ camera.viewerConnected() ? 'up' : 'down' }}
+        </span>
+        <span class="health-pill" [class.ok]="hasRuntimeTurn()" [class.warn]="!hasRuntimeTurn()">
+          TURN {{ hasRuntimeTurn() ? 'present' : 'missing' }}
+        </span>
+      </div>
+    </div>
+  </header>
+
+  <section class="command-bar" *ngIf="overview() as o">
+    <article class="metric metric-alert">
+      <div class="label">Active incidents</div>
+      <div class="value">{{ activeIncidents().length }}</div>
+    </article>
+    <article class="metric">
+      <div class="label">Live cameras</div>
+      <div class="value">{{ filteredSessions().length }}</div>
+    </article>
+    <article class="metric">
+      <div class="label">Tracked units</div>
+      <div class="value">{{ filteredUsers().length }}</div>
+    </article>
+    <article class="metric metric-alert">
+      <div class="label">Emergency alerts</div>
+      <div class="value">{{ emergencyAlertsCount() }}</div>
+    </article>
+    <article class="metric">
+      <div class="label">Stale / offline</div>
+      <div class="value">{{ staleOrOfflineCount() }}</div>
+    </article>
+    <article class="metric">
+      <div class="label">Selected unit status</div>
+      <div class="value status">{{ selectedUnitStatusLabel() }}</div>
+    </article>
+  </section>
+
+  <mat-card class="controls-card">
+    <div class="filters-grid">
+      <mat-form-field appearance="outline">
+        <mat-label>Search unit / incident / session</mat-label>
+        <input matInput [(ngModel)]="search" (keyup.enter)="refresh()" />
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Camera scope</mat-label>
+        <mat-select [(ngModel)]="activeCameraOnly" (selectionChange)="refresh()">
+          <mat-option [value]="false">All units</mat-option>
+          <mat-option [value]="true">Live camera only</mat-option>
+        </mat-select>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Tracking scope</mat-label>
+        <mat-select [(ngModel)]="liveTrackingOnly" (selectionChange)="refresh()">
+          <mat-option [value]="false">All tracking</mat-option>
+          <mat-option [value]="true">Tracking-enabled only</mat-option>
+        </mat-select>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Role filter</mat-label>
+        <mat-select [(ngModel)]="roleFilter" (selectionChange)="applyLocalViewState()">
+          <mat-option value="ALL">All roles</mat-option>
+          <mat-option value="POLICE">Police only</mat-option>
+          <mat-option value="CASE_WORKER">Case workers only</mat-option>
+        </mat-select>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Unit status filter</mat-label>
+        <mat-select [(ngModel)]="statusFilter" (selectionChange)="applyLocalViewState()">
+          <mat-option value="ALL">All statuses</mat-option>
+          <mat-option *ngFor="let status of unitStatusOptions" [value]="status">{{ status }}</mat-option>
+        </mat-select>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Incident scope</mat-label>
+        <mat-select [(ngModel)]="activeIncidentsOnly" (selectionChange)="applyLocalViewState()">
+          <mat-option [value]="true">Active incidents only</mat-option>
+          <mat-option [value]="false">All incidents</mat-option>
+        </mat-select>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Emergency filter</mat-label>
+        <mat-select [(ngModel)]="emergencyOnly" (selectionChange)="applyLocalViewState()">
+          <mat-option [value]="false">All priorities</mat-option>
+          <mat-option [value]="true">Emergency only</mat-option>
+        </mat-select>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Stale/offline filter</mat-label>
+        <mat-select [(ngModel)]="staleOrOfflineOnly" (selectionChange)="applyLocalViewState()">
+          <mat-option [value]="false">All freshness</mat-option>
+          <mat-option [value]="true">Stale + offline only</mat-option>
+        </mat-select>
+      </mat-form-field>
+    </div>
+
+    <div class="toolbar-actions">
+      <button mat-stroked-button type="button" (click)="refresh()" [disabled]="loading()">
+        {{ loading() ? 'Refreshing...' : 'Refresh' }}
+      </button>
+      <button mat-stroked-button type="button" (click)="toggleFollowSelected()">
+        {{ followSelectedUnit() ? 'Follow selected: ON' : 'Follow selected: OFF' }}
+      </button>
+      <button mat-stroked-button type="button" (click)="jumpToEmergencyFocus()">Jump to emergency (E)</button>
+      <button mat-button type="button" (click)="openNextStream(false)">Prev stream</button>
+      <button mat-button type="button" (click)="openNextStream(true)">Next stream</button>
+      <button mat-button type="button" (click)="debugPanelEnabled.set(!debugPanelEnabled())">
+        {{ debugPanelEnabled() ? 'Hide debug' : 'Show debug' }}
+      </button>
+      <a mat-button routerLink="/live-camera-logs">Camera logs</a>
+      <a mat-button routerLink="/tracking-logs">Tracking logs</a>
+    </div>
+
+    <p class="err" *ngIf="error()">{{ error() }}</p>
+    <p class="err" *ngIf="camera.viewerErrors()['_global']">{{ camera.viewerErrors()['_global'] }}</p>
+  </mat-card>
+
+  <section class="main-grid" *ngIf="overview() as o">
+    <mat-card class="map-stage">
+      <div class="panel-head">
+        <h3>Operational map</h3>
+        <div class="panel-actions">
+          <button mat-button type="button" (click)="focusSelectedOnMap()" [disabled]="!selectedUserId()">Focus selected</button>
+          <button mat-button type="button" (click)="fitMapBounds()">Fit all</button>
+        </div>
+      </div>
+      <div id="control-room-map"></div>
+      <div class="legend">
+        <span class="legend-chip st-available">AVAILABLE</span>
+        <span class="legend-chip st-assigned">ASSIGNED</span>
+        <span class="legend-chip st-responding">RESPONDING</span>
+        <span class="legend-chip st-onscene">ON_SCENE</span>
+        <span class="legend-chip st-offline">OFFLINE</span>
+        <span class="legend-chip st-emergency">EMERGENCY</span>
+      </div>
+    </mat-card>
+
+    <mat-card class="main-viewer">
+      <div class="panel-head">
+        <h3>Main selected stream</h3>
+        <div class="panel-actions">
+          <button mat-button type="button" (click)="jumpToEmergencyFocus()">Emergency focus</button>
+          <button mat-button type="button" (click)="openNextStream(true)">Next</button>
+        </div>
+      </div>
+
+      <ng-container *ngIf="selectedSession() as selected; else noSelection">
+        <div class="selected-meta-head">
+          <div>
+            <strong>{{ selected.user.fullName }}</strong>
+            <div class="meta-inline">
+              <span class="pill" [class]="statusPillClass(unitStatusForUser(selected.userId))">
+                {{ unitStatusForUser(selected.userId) }}
+              </span>
+              <span class="pill camera">{{ tileState(selected) }}</span>
+              <span class="pill emergency" *ngIf="selected.emergency">EMERGENCY</span>
+            </div>
+          </div>
+          <div class="panel-actions">
+            <button mat-button type="button" (click)="focusUserOnMap(selected.userId)">Focus map</button>
+            <button mat-button type="button" (click)="requestFullscreen(mainVideo)">Fullscreen</button>
+            <button mat-button type="button" (click)="createIncidentFromStream(selected)">Create incident</button>
+            <button mat-button type="button" (click)="requestLocationForUser(selected.userId)">Request location</button>
+          </div>
+        </div>
+
+        <video
+          #mainVideo
+          [appMediaStream]="streamFor(selected.id)"
+          [appMediaStreamSessionId]="selected.id"
+          appMediaStreamTarget="main"
+          (appMediaStreamState)="onMediaStreamBinding($event, 'main')"
+          autoplay
+          playsinline
+          controls
+        ></video>
+
+        <div class="viewer-grid">
+          <div><span>Role:</span> {{ selected.user.role }}</div>
+          <div><span>Stream state:</span> {{ tileState(selected) }}</div>
+          <div><span>GPS freshness:</span> {{ formatFreshness(selected.location?.freshnessSeconds ?? null) }}</div>
+          <div><span>Last GPS:</span> {{ selected.location?.lastReceivedAt ? (selected.location?.lastReceivedAt | date:'yyyy-MM-dd HH:mm:ss') : '-' }}</div>
+          <div><span>Session started:</span> {{ selected.startedAt | date:'yyyy-MM-dd HH:mm:ss' }}</div>
+          <div><span>Incident link:</span> {{ linkedIncidentLabel(selected.userId) }}</div>
+        </div>
+
+        <p class="err small" *ngIf="streamErrorFor(selected.id)">{{ streamErrorFor(selected.id) }}</p>
+
+        <section class="debug-panel" *ngIf="debugPanelEnabled()">
+          <h4>Selected stream diagnostics</h4>
+          <ng-container *ngIf="selectedDiagnostics() as d; else noDebug">
+            <div>Session id: {{ d.sessionId || '-' }}</div>
+            <div>Socket connected: {{ boolLabel(d.socketConnected) }}</div>
+            <div>Peer connection state: {{ d.connectionState || '-' }}</div>
+            <div>ICE state: {{ d.iceConnectionState || '-' }}</div>
+            <div>Signaling state: {{ d.signalingState || '-' }}</div>
+            <div>Remote stream created: {{ boolLabel(d.remoteStreamCreated) }}</div>
+            <div>Remote video track present: {{ boolLabel(d.remoteVideoTrackPresent) }}</div>
+            <div>srcObject bound: {{ boolLabel(d.srcObjectBound) }}</div>
+            <div>Bytes received: {{ numberLabel(d.bytesReceived) }}</div>
+            <div>Packets received: {{ numberLabel(d.packetsReceived) }}</div>
+            <div>Frames received: {{ numberLabel(d.framesReceived) }}</div>
+            <div>Frames decoded: {{ numberLabel(d.framesDecoded) }}</div>
+            <div>Selected ICE candidate type: {{ d.selectedIceCandidateType || '-' }}</div>
+            <div>TURN present: {{ boolLabel(d.turnPresent) }}</div>
+            <div>ICE config source: {{ d.iceConfigSource || '-' }}</div>
+            <div>ICE policy: {{ d.iceTransportPolicy || '-' }}</div>
+            <div>Offer created: {{ boolLabel(d.signalingOfferCreated) }}</div>
+            <div>Offer sent: {{ boolLabel(d.signalingOfferSent) }}</div>
+            <div>Sender received offer: {{ boolLabel(d.signalingSenderReceivedOffer) }}</div>
+            <div>Answer received: {{ boolLabel(d.signalingAnswerReceived) }}</div>
+            <div>Answer applied: {{ boolLabel(d.signalingAnswerApplied) }}</div>
+            <div>ICE candidates received: {{ numberLabel(d.signalingIceCandidatesReceived) }}</div>
+            <div>Play error: {{ d.playError || '-' }}</div>
+            <div>Last signaling error: {{ d.lastSignalingError || '-' }}</div>
+          </ng-container>
+          <ng-template #noDebug>
+            <div>No diagnostics for selected stream yet.</div>
+          </ng-template>
+        </section>
+      </ng-container>
+
+      <ng-template #noSelection>
+        <div class="empty-state">
+          <h4>No stream selected</h4>
+          <p>Select a live stream tile, map marker, or incident-linked stream.</p>
+        </div>
+      </ng-template>
+    </mat-card>
+
+    <mat-card class="action-panel">
+      <h3>Selected unit / incident actions</h3>
+
+      <ng-container *ngIf="selectedUnitRow() as unit; else noUnit">
+        <div class="unit-head">
+          <div>
+            <strong>{{ unit.name }}</strong>
+            <div class="muted small">{{ unit.role }} | {{ unit.email }}</div>
+          </div>
+          <span class="pill" [class]="statusPillClass(unitStatusForUser(unit.userId))">{{ unitStatusForUser(unit.userId) }}</span>
+        </div>
+
+        <div class="unit-grid">
+          <div><span>Camera:</span> {{ unit.cameraStatus }}</div>
+          <div><span>Tracking:</span> {{ unit.trackingHealthState }}</div>
+          <div><span>Last GPS:</span> {{ unit.lastGpsUpdate ? (unit.lastGpsUpdate | date:'yyyy-MM-dd HH:mm:ss') : '-' }}</div>
+          <div><span>GPS freshness:</span> {{ formatFreshness(mapFreshnessForUser(unit.userId)) }}</div>
+          <div><span>Trusted device:</span> {{ unit.trustedDeviceAssigned ? 'Assigned' : 'Not assigned' }}</div>
+          <div><span>Last ping:</span> {{ trackingSnapshotForUser(unit.userId)?.lastPingStatus || '-' }}</div>
+          <div><span>Active incident:</span> {{ linkedIncidentLabel(unit.userId) }}</div>
+          <div><span>Live session:</span> {{ unit.activeCameraSessionId ? unit.activeCameraSessionId.slice(0, 8) : '-' }}</div>
+        </div>
+
+        <div class="status-strip" *ngIf="isOperator()">
+          <button
+            mat-stroked-button
+            type="button"
+            *ngFor="let status of unitStatusOptions"
+            [class.active]="unitStatusForUser(unit.userId) === status"
+            (click)="setUnitStatus(unit.userId, status)"
+          >
+            {{ status }}
+          </button>
+        </div>
+
+        <div class="panel-actions">
+          <button mat-button type="button" (click)="requestLocationForUser(unit.userId)">Request location</button>
+          <button mat-button type="button" (click)="viewCameraLogs(unit.userId)">Camera logs</button>
+          <button mat-button type="button" (click)="viewTrackingLogs(unit.userId)">Tracking logs</button>
+          <button mat-button type="button" (click)="openUserProfile(unit.userId)" [disabled]="!isAdmin()">Open user profile</button>
+          <button
+            mat-button
+            type="button"
+            color="warn"
+            [disabled]="!unit.activeCameraSessionId || busySessionId() === unit.activeCameraSessionId"
+            (click)="stopSession(unit.activeCameraSessionId)"
+          >
+            Stop stream
+          </button>
+        </div>
+      </ng-container>
+      <ng-template #noUnit>
+        <p class="muted">No unit selected. Select a marker, stream tile, or incident.</p>
+      </ng-template>
+
+      <hr />
+
+      <ng-container *ngIf="selectedIncident() as incident; else noIncident">
+        <div class="incident-head">
+          <strong>{{ incident.incidentCode }}</strong>
+          <span class="pill" [class]="incidentPillClass(incident)">{{ incidentBucket(incident) }}</span>
+        </div>
+        <div class="muted small">{{ incident.title || incident.type }} | {{ incident.status }} | {{ incident.priority }}</div>
+        <div class="unit-grid">
+          <div><span>Location:</span> {{ incident.locationLabel || '-' }}</div>
+          <div><span>Assigned:</span> {{ incidentAssignedName(incident) }}</div>
+          <div><span>Updated:</span> {{ incident.updatedAt | date:'yyyy-MM-dd HH:mm:ss' }}</div>
+        </div>
+        <div class="panel-actions">
+          <button mat-button type="button" (click)="focusIncidentOnMap(incident.id)">Focus map</button>
+          <button mat-button type="button" (click)="openIncidentDetails(incident.id)">Open details</button>
+          <button mat-button type="button" (click)="assignIncidentToSelectedUnit()" [disabled]="!canManageIncidents()">Assign + respond</button>
+          <button mat-button type="button" (click)="escalateSelectedIncident()" [disabled]="!canManageIncidents()">Escalate priority</button>
+        </div>
+      </ng-container>
+      <ng-template #noIncident>
+        <p class="muted small">No incident selected.</p>
+      </ng-template>
+
+      <hr />
+
+      <section class="ice-diagnostics">
+        <h4>ICE configuration check</h4>
+        <div><span>Backend ICE loaded:</span> {{ boolLabel(backendIceDebug()?.backendIceConfigLoaded ?? false) }}</div>
+        <div><span>TURN present (backend):</span> {{ boolLabel(backendIceDebug()?.turnPresent ?? false) }}</div>
+        <div><span>Frontend fallback used:</span> {{ boolLabel(camera.iceRuntimeSummary().frontendFallbackUsed) }}</div>
+        <div><span>Transport policy:</span> {{ camera.iceRuntimeSummary().iceTransportPolicy }}</div>
+        <div><span>ICE source:</span> {{ camera.iceRuntimeSummary().iceConfigSource }}</div>
+        <p class="warn" *ngIf="!hasRuntimeTurn()">Only STUN is active. Cross-network media can fail without TURN relay.</p>
+      </section>
+    </mat-card>
+  </section>
+
+  <section class="stream-strip" *ngIf="secondarySessions().length; else noStreamTiles">
+    <article
+      *ngFor="let session of secondarySessions(); trackBy: trackBySessionId"
+      class="stream-tile"
+      [class.selected]="isSelected(session.id)"
+      [class.emergency]="session.emergency"
+    >
+      <header>
+        <div>
+          <strong>{{ session.user.fullName }}</strong>
+          <div class="muted tiny">{{ session.user.role }}</div>
+        </div>
+        <div class="meta-inline">
+          <span class="pill" [class]="statusPillClass(unitStatusForUser(session.userId))">{{ unitStatusForUser(session.userId) }}</span>
+          <span class="pill camera">{{ tileState(session) }}</span>
+        </div>
+      </header>
+
+      <video
+        #tileVideo
+        [appMediaStream]="streamFor(session.id)"
+        [appMediaStreamSessionId]="session.id"
+        appMediaStreamTarget="tile"
+        (appMediaStreamState)="onMediaStreamBinding($event, 'tile')"
+        autoplay
+        playsinline
+        muted
+        (click)="selectSession(session.id, 'SWITCH')"
+      ></video>
+
+      <div class="tiny muted">
+        GPS freshness: {{ formatFreshness(session.location?.freshnessSeconds ?? null) }} | Last: {{
+          session.location?.lastReceivedAt ? (session.location?.lastReceivedAt | date:'HH:mm:ss') : '-'
+        }}
+      </div>
+      <p class="err tiny" *ngIf="streamErrorFor(session.id)">{{ streamErrorFor(session.id) }}</p>
+
+      <div class="tile-actions">
+        <button mat-button type="button" (click)="selectSession(session.id, 'SELECT')">Make primary</button>
+        <button mat-button type="button" (click)="focusUserOnMap(session.userId)">Focus map</button>
+        <button mat-button type="button" (click)="requestFullscreen(tileVideo)">Fullscreen</button>
+      </div>
+    </article>
+  </section>
+  <ng-template #noStreamTiles>
+    <p class="muted">No additional live streams right now.</p>
+  </ng-template>
+
+  <section class="lower-grid">
+    <mat-card class="incident-queue">
+      <div class="panel-head">
+        <h3>Incident queue</h3>
+        <div class="muted small">{{ activeIncidents().length }} incident(s)</div>
+      </div>
+
+      <div class="queue-group" *ngFor="let group of incidentGroups()">
+        <div class="queue-title">
+          <span>{{ group.label }}</span>
+          <span>{{ group.items.length }}</span>
+        </div>
+
+        <button
+          type="button"
+          class="incident-row"
+          *ngFor="let incident of group.items; trackBy: trackByIncidentId"
+          [class.selected]="selectedIncidentId() === incident.id"
+          [class.emergency]="incidentBucket(incident) === 'EMERGENCY'"
+          (click)="selectIncident(incident.id, true)"
+        >
+          <div class="incident-main">
+            <strong>{{ incident.title || incident.type }}</strong>
+            <div class="muted tiny">{{ incident.incidentCode }} | {{ incident.status }} | {{ incident.priority }}</div>
+          </div>
+          <div class="incident-side">
+            <span>{{ incident.updatedAt | date:'HH:mm:ss' }}</span>
+            <span>{{ incidentAssignedName(incident) }}</span>
+          </div>
+        </button>
+
+        <p class="muted tiny" *ngIf="!group.items.length">No incidents in this bucket.</p>
+      </div>
+    </mat-card>
+
+    <mat-card class="event-feed">
+      <div class="panel-head">
+        <h3>Live event feed</h3>
+        <div class="panel-actions">
+          <a mat-button routerLink="/live-camera-logs">Camera logs</a>
+          <a mat-button routerLink="/tracking-logs">Tracking logs</a>
+        </div>
+      </div>
+
+      <div class="feed-list" *ngIf="eventFeed().length; else noEvents">
+        <article
+          *ngFor="let item of eventFeed(); trackBy: trackByEventId"
+          class="feed-item"
+          [class.warn]="item.level === 'WARN'"
+          [class.emergency]="item.level === 'EMERGENCY'"
+        >
+          <div class="feed-head">
+            <span class="source">{{ item.source }}</span>
+            <span>{{ item.at | date:'HH:mm:ss' }}</span>
+          </div>
+          <strong>{{ item.label }}</strong>
+          <p>{{ item.detail }}</p>
+          <div class="feed-actions">
+            <button mat-button type="button" *ngIf="item.userId" (click)="selectUser(item.userId, 'PANEL')">Select unit</button>
+            <button mat-button type="button" *ngIf="item.sessionId" (click)="selectSession(item.sessionId, 'SELECT')">Open stream</button>
+            <button mat-button type="button" *ngIf="item.incidentId" (click)="selectIncident(item.incidentId, true)">Open incident</button>
+          </div>
+        </article>
+      </div>
+      <ng-template #noEvents>
+        <p class="muted">No live events found for the current scope.</p>
+      </ng-template>
+    </mat-card>
+  </section>
+
+  <mat-card class="unit-table" *ngIf="overview() as o">
+    <div class="panel-head">
+      <h3>Unit roster and quick actions</h3>
+      <a mat-button routerLink="/tracking-overview">Tracking overview</a>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Unit</th>
+            <th>Role</th>
+            <th>Status</th>
+            <th>Tracking</th>
+            <th>Camera</th>
+            <th>Incident</th>
+            <th>Last GPS</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            *ngFor="let row of filteredUsers(); trackBy: trackByUserId"
+            [class.selected]="selectedUserId() === row.userId"
+          >
+            <td data-label="Unit">
+              <div><strong>{{ row.name }}</strong></div>
+              <div class="tiny muted">{{ row.email }}</div>
+            </td>
+            <td data-label="Role">{{ row.role }}</td>
+            <td data-label="Status">
+              <span class="pill" [class]="statusPillClass(unitStatusForUser(row.userId))">{{ unitStatusForUser(row.userId) }}</span>
+            </td>
+            <td data-label="Tracking"><span class="pill camera">{{ row.trackingHealthState }}</span></td>
+            <td data-label="Camera"><span class="pill camera">{{ row.cameraStatus }}</span></td>
+            <td data-label="Incident">{{ linkedIncidentLabel(row.userId) }}</td>
+            <td data-label="Last GPS">{{ row.lastGpsUpdate ? (row.lastGpsUpdate | date:'HH:mm:ss') : '-' }}</td>
+            <td data-label="Actions" class="row-actions">
+              <button mat-button type="button" (click)="selectUser(row.userId, 'PANEL')">Select</button>
+              <button mat-button type="button" (click)="openRowStream(row)" [disabled]="!row.activeCameraSessionId">Open stream</button>
+              <button mat-button type="button" (click)="focusUserOnMap(row.userId)">Focus map</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </mat-card>
+
+  <p class="web-note">
+    Web limitation: sender browser must remain active enough to keep capture and network transmission alive.
+  </p>
+  <p class="web-note tiny">
+    Keyboard shortcuts: <strong>Left/Right</strong> switch stream, <strong>E</strong> jump to emergency,
+    <strong>F</strong> toggle follow-selected.
+  </p>
+</div>
+

@@ -1,5 +1,5 @@
 ﻿import { CommonModule } from "@angular/common";
-import { AfterViewInit, Component, OnDestroy, inject, signal } from "@angular/core";
+import { AfterViewInit, Component, HostListener, OnDestroy, inject, signal } from "@angular/core";
 import { FormsModule } from "@angular/forms";
 import { MatButtonModule } from "@angular/material/button";
 import { MatCardModule } from "@angular/material/card";
@@ -8,13 +8,19 @@ import { MatInputModule } from "@angular/material/input";
 import { MatSelectModule } from "@angular/material/select";
 import { Router, RouterModule } from "@angular/router";
 import * as L from "leaflet";
+import { catchError, forkJoin, of } from "rxjs";
 import {
   ControlRoomMapUser,
   ControlRoomOverviewResponse,
   ControlRoomUserRow,
+  IncidentRecord,
+  IncidentStatus,
+  LiveCameraIceDebugSummary,
+  LiveCameraLogRow,
   LiveCameraSessionRecord,
-  LiveCameraSessionStatus,
-  Role
+  Role,
+  TrackingLogRow,
+  TrackingOverviewUser
 } from "../models";
 import { MediaStreamBindingState, MediaStreamDirective } from "../directives/media-stream.directive";
 import { ApiService } from "../services/api.service";
@@ -22,6 +28,42 @@ import { AuthService } from "../services/auth.service";
 import { LiveCameraService } from "../services/live-camera.service";
 
 type SelectCause = "MAP" | "SWITCH" | "SELECT";
+type UnitOperationalStatus = "AVAILABLE" | "ASSIGNED" | "RESPONDING" | "ON_SCENE" | "OFFLINE" | "EMERGENCY";
+type IncidentBucket = "EMERGENCY" | "HIGH" | "MEDIUM" | "LOW";
+type EventLevel = "INFO" | "WARN" | "EMERGENCY";
+type RoleFilter = "ALL" | "POLICE" | "CASE_WORKER";
+
+type ControlEventItem = {
+  id: string;
+  at: string;
+  source: "CAMERA" | "TRACKING" | "INCIDENT" | "OPERATOR";
+  level: EventLevel;
+  label: string;
+  detail: string;
+  userId: string | null;
+  sessionId: string | null;
+  incidentId: string | null;
+};
+
+const ACTIVE_INCIDENT_STATUSES = new Set<IncidentStatus>([
+  "DRAFT",
+  "REPORTED",
+  "ACTIVE_RESPONSE",
+  "CONTAINED",
+  "OPEN",
+  "IN_PROGRESS"
+]);
+
+const UNIT_STATUS_OPTIONS: UnitOperationalStatus[] = [
+  "AVAILABLE",
+  "ASSIGNED",
+  "RESPONDING",
+  "ON_SCENE",
+  "OFFLINE",
+  "EMERGENCY"
+];
+
+const UNIT_STATUS_STORAGE_KEY = "control-room.unit-status-overrides.v1";
 
 @Component({
   selector: "app-control-room-page",
@@ -37,650 +79,8 @@ type SelectCause = "MAP" | "SWITCH" | "SELECT";
     MatSelectModule,
     MediaStreamDirective
   ],
-  template: `
-    <div class="shell">
-      <mat-card class="toolbar-card">
-        <div class="toolbar-row">
-          <div>
-            <h2>Control Room</h2>
-            <p class="muted">Central map + live camera switching for operations staff.</p>
-          </div>
-          <div class="toolbar-actions">
-            <button mat-stroked-button type="button" (click)="refresh()" [disabled]="loading()">Refresh</button>
-            <button mat-button type="button" (click)="debugPanelEnabled.set(!debugPanelEnabled())">
-              {{ debugPanelEnabled() ? 'Hide debug' : 'Show debug' }}
-            </button>
-            <a mat-button routerLink="/live-camera-logs">Camera logs</a>
-          </div>
-        </div>
-
-        <div class="filters">
-          <mat-form-field appearance="outline">
-            <mat-label>Search user</mat-label>
-            <input matInput [(ngModel)]="search" (keyup.enter)="refresh()" />
-          </mat-form-field>
-
-          <mat-form-field appearance="outline">
-            <mat-label>Camera filter</mat-label>
-            <mat-select [(ngModel)]="activeCameraOnly" (selectionChange)="refresh()">
-              <mat-option [value]="false">All users</mat-option>
-              <mat-option [value]="true">Active camera only</mat-option>
-            </mat-select>
-          </mat-form-field>
-
-          <mat-form-field appearance="outline">
-            <mat-label>Tracking filter</mat-label>
-            <mat-select [(ngModel)]="liveTrackingOnly" (selectionChange)="refresh()">
-              <mat-option [value]="false">All tracking states</mat-option>
-              <mat-option [value]="true">Live tracking enabled</mat-option>
-            </mat-select>
-          </mat-form-field>
-        </div>
-
-        <p class="err" *ngIf="error()">{{ error() }}</p>
-        <p class="err" *ngIf="camera.viewerErrors()['_global']">{{ camera.viewerErrors()['_global'] }}</p>
-      </mat-card>
-
-      <section class="summary-grid" *ngIf="overview() as o">
-        <mat-card>
-          <div class="summary-label">Tracked users on map</div>
-          <div class="summary-value">{{ o.summary.totalTrackedUsers }}</div>
-        </mat-card>
-        <mat-card>
-          <div class="summary-label">Live camera users</div>
-          <div class="summary-value">{{ o.summary.totalLiveCameraUsers }}</div>
-        </mat-card>
-        <mat-card>
-          <div class="summary-label">Selected stream</div>
-          <div class="summary-value small">{{ selectedSession()?.user?.fullName || 'None' }}</div>
-        </mat-card>
-        <mat-card>
-          <div class="summary-label">Emergency streams</div>
-          <div class="summary-value">{{ o.summary.emergencyStreamsCount }}</div>
-        </mat-card>
-        <mat-card>
-          <div class="summary-label">Stale/offline users</div>
-          <div class="summary-value">{{ o.summary.staleOrOfflineUsersCount }}</div>
-        </mat-card>
-        <mat-card>
-          <div class="summary-label">Active incidents</div>
-          <div class="summary-value">{{ o.summary.activeIncidentsCount }}</div>
-        </mat-card>
-      </section>
-
-      <section class="workspace" *ngIf="overview() as o">
-        <aside class="tiles-column">
-          <h3>Live camera tiles</h3>
-          <div class="tile-list" *ngIf="leftTiles().length; else noTiles">
-            <article
-              *ngFor="let session of leftTiles(); trackBy: trackBySessionId"
-              class="camera-tile"
-              [class.selected]="isSelected(session.id)"
-            >
-              <header>
-                <strong>{{ session.user.fullName }}</strong>
-                <span class="badge" [class]="tileStateClass(session)">{{ tileState(session) }}</span>
-              </header>
-
-              <video
-                #tileLeftVideo
-                [appMediaStream]="streamFor(session.id)"
-                [appMediaStreamSessionId]="session.id"
-                appMediaStreamTarget="tile"
-                (appMediaStreamState)="onMediaStreamBinding($event, 'tile')"
-                autoplay
-                playsinline
-                muted
-                (click)="selectSession(session.id, 'SWITCH')"
-              ></video>
-
-              <p class="meta">{{ session.user.role }} | Started {{ session.startedAt | date:'HH:mm:ss' }}</p>
-              <p class="meta">Mic: {{ session.microphoneEnabled === null ? 'Unknown' : session.microphoneEnabled ? 'On' : 'Muted' }}</p>
-              <p class="meta">GPS freshness: {{ formatFreshness(session.location?.freshnessSeconds ?? null) }}</p>
-              <p class="err small" *ngIf="streamErrorFor(session.id)">{{ streamErrorFor(session.id) }}</p>
-
-              <div class="tile-actions">
-                <button mat-button type="button" (click)="focusUserOnMap(session.userId)">Focus map</button>
-                <button mat-button type="button" (click)="selectSession(session.id, 'SELECT')">Open large</button>
-                <button mat-button type="button" (click)="requestFullscreen(tileLeftVideo)">Fullscreen</button>
-              </div>
-            </article>
-          </div>
-
-          <ng-template #noTiles>
-            <p class="muted">No active camera streams right now.</p>
-          </ng-template>
-        </aside>
-
-        <div class="map-panel">
-          <div class="map-header">
-            <h3>Operational map</h3>
-            <div class="map-actions">
-              <button mat-stroked-button type="button" (click)="focusSelectedOnMap()" [disabled]="!selectedSession()">
-                Focus selected user
-              </button>
-              <button mat-stroked-button type="button" (click)="fitMapBounds()">Fit all markers</button>
-            </div>
-          </div>
-          <div id="control-room-map"></div>
-          <p class="muted small">Click a map marker to highlight and open its camera stream.</p>
-        </div>
-
-        <aside class="viewer-column">
-          <mat-card class="main-viewer">
-            <h3>Main selected stream</h3>
-
-            <ng-container *ngIf="selectedSession() as selected; else noSelection">
-              <div class="selected-header">
-                <div>
-                  <strong>{{ selected.user.fullName }}</strong>
-                  <div class="muted small">{{ selected.user.role }} | {{ tileState(selected) }}</div>
-                </div>
-                <div class="selected-actions">
-                  <button mat-button type="button" (click)="focusUserOnMap(selected.userId)">Focus map</button>
-                  <button mat-button type="button" (click)="requestFullscreen(mainVideo)">Fullscreen</button>
-                  <button mat-button type="button" (click)="createIncidentFromStream(selected)">Create incident</button>
-                </div>
-              </div>
-
-              <video
-                #mainVideo
-                [appMediaStream]="streamFor(selected.id)"
-                [appMediaStreamSessionId]="selected.id"
-                appMediaStreamTarget="main"
-                (appMediaStreamState)="onMediaStreamBinding($event, 'main')"
-                autoplay
-                playsinline
-                controls
-              ></video>
-
-              <p class="err small" *ngIf="streamErrorFor(selected.id)">{{ streamErrorFor(selected.id) }}</p>
-
-              <p class="meta">
-                Last GPS: {{ selected.location?.lastReceivedAt ? (selected.location?.lastReceivedAt | date:'yyyy-MM-dd HH:mm:ss') : '-' }}
-              </p>
-              <p class="meta">GPS freshness: {{ formatFreshness(selected.location?.freshnessSeconds ?? null) }}</p>
-
-              <section class="debug-panel" *ngIf="debugPanelEnabled()">
-                <h4>Selected stream debug</h4>
-                <ng-container *ngIf="selectedDiagnostics() as d; else noDebug">
-                  <div>Session: {{ d.sessionId }}</div>
-                  <div>Socket connected: {{ d.socketConnected ? 'Yes' : 'No' }}</div>
-                  <div>Peer connection state: {{ d.connectionState }}</div>
-                  <div>ICE state: {{ d.iceConnectionState }}</div>
-                  <div>Signaling state: {{ d.signalingState }}</div>
-                  <div>Remote stream created: {{ d.remoteStreamCreated ? 'Yes' : 'No' }}</div>
-                  <div>Remote video track present: {{ d.remoteVideoTrackPresent ? 'Yes' : 'No' }}</div>
-                  <div>Video srcObject bound: {{ d.srcObjectBound ? 'Yes' : 'No' }}</div>
-                  <div>Bytes received: {{ d.bytesReceived ?? '-' }}</div>
-                  <div>Selected ICE candidate: {{ d.selectedIceCandidateType || '-' }}</div>
-                  <div>Play error: {{ d.playError || '-' }}</div>
-                </ng-container>
-                <ng-template #noDebug>
-                  <div>No diagnostics for selected stream yet.</div>
-                </ng-template>
-              </section>
-            </ng-container>
-
-            <ng-template #noSelection>
-              <p class="muted">No stream selected.</p>
-            </ng-template>
-          </mat-card>
-
-          <mat-card class="management-panel">
-            <div class="management-header">
-              <h3>Tracking + camera management</h3>
-              <a mat-button routerLink="/tracking-overview">Tracking ops</a>
-            </div>
-
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>User</th>
-                    <th>Role</th>
-                    <th>Tracking</th>
-                    <th>Camera</th>
-                    <th>Trusted device</th>
-                    <th>Last GPS</th>
-                    <th>Last camera</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr *ngFor="let row of o.users">
-                    <td data-label="User">
-                      <div><strong>{{ row.name }}</strong></div>
-                      <div class="muted small">{{ row.email }}</div>
-                    </td>
-                    <td data-label="Role">{{ row.role }}</td>
-                    <td data-label="Tracking">
-                      <span class="badge" [class]="trackingBadgeClass(row.trackingHealthState)">
-                        {{ row.trackingHealthState }}
-                      </span>
-                    </td>
-                    <td data-label="Camera">
-                      <span class="badge" [class]="cameraBadgeClass(row.cameraStatus)">{{ row.cameraStatus }}</span>
-                    </td>
-                    <td data-label="Trusted">
-                      {{ row.trustedDeviceAssigned ? 'Yes' : 'No' }}
-                    </td>
-                    <td data-label="Last GPS">{{ row.lastGpsUpdate ? (row.lastGpsUpdate | date:'HH:mm:ss') : '-' }}</td>
-                    <td data-label="Last camera">{{ row.lastCameraSessionAt ? (row.lastCameraSessionAt | date:'HH:mm:ss') : '-' }}</td>
-                    <td data-label="Actions" class="row-actions">
-                      <button mat-button type="button" [disabled]="!row.activeCameraSessionId" (click)="openRowStream(row)">
-                        Open stream
-                      </button>
-                      <button mat-button type="button" (click)="focusUserOnMap(row.userId)">Focus map</button>
-                      <button mat-button type="button" (click)="viewLogs(row.userId)">Logs</button>
-                      <button
-                        mat-button
-                        type="button"
-                        color="warn"
-                        [disabled]="!row.activeCameraSessionId || busySessionId() === row.activeCameraSessionId"
-                        (click)="stopSession(row.activeCameraSessionId)">
-                        Stop session
-                      </button>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </mat-card>
-        </aside>
-      </section>
-
-      <section class="right-tiles" *ngIf="rightTiles().length">
-        <article
-          *ngFor="let session of rightTiles(); trackBy: trackBySessionId"
-          class="camera-tile"
-          [class.selected]="isSelected(session.id)"
-        >
-          <header>
-            <strong>{{ session.user.fullName }}</strong>
-            <span class="badge" [class]="tileStateClass(session)">{{ tileState(session) }}</span>
-          </header>
-
-          <video
-            #tileRightVideo
-            [appMediaStream]="streamFor(session.id)"
-            [appMediaStreamSessionId]="session.id"
-            appMediaStreamTarget="tile"
-            (appMediaStreamState)="onMediaStreamBinding($event, 'tile')"
-            autoplay
-            playsinline
-            muted
-            (click)="selectSession(session.id, 'SWITCH')"
-          ></video>
-
-          <div class="tile-actions">
-            <button mat-button type="button" (click)="focusUserOnMap(session.userId)">Focus map</button>
-            <button mat-button type="button" (click)="selectSession(session.id, 'SELECT')">Open large</button>
-            <button mat-button type="button" (click)="requestFullscreen(tileRightVideo)">Fullscreen</button>
-          </div>
-
-          <p class="err small" *ngIf="streamErrorFor(session.id)">{{ streamErrorFor(session.id) }}</p>
-        </article>
-      </section>
-
-      <p class="web-note">
-        Web-only limitation: live camera streams require the sender browser to stay open and in foreground enough to keep capture and network active.
-      </p>
-    </div>
-  `,
-  styles: [
-    `
-      .shell {
-        padding: var(--page-padding);
-        display: grid;
-        gap: 0.85rem;
-      }
-
-      .toolbar-card {
-        display: grid;
-        gap: 0.75rem;
-      }
-
-      .toolbar-row {
-        display: flex;
-        justify-content: space-between;
-        gap: 0.7rem;
-        flex-wrap: wrap;
-      }
-
-      .toolbar-row h2 {
-        margin: 0;
-      }
-
-      .toolbar-actions {
-        display: flex;
-        gap: 0.4rem;
-        align-items: center;
-      }
-
-      .filters {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 0.6rem;
-      }
-
-      .summary-grid {
-        display: grid;
-        grid-template-columns: repeat(6, minmax(0, 1fr));
-        gap: 0.6rem;
-      }
-
-      .summary-label {
-        color: #475569;
-        font-size: 0.8rem;
-      }
-
-      .summary-value {
-        font-size: 1.35rem;
-        font-weight: 700;
-        color: #0f172a;
-      }
-
-      .summary-value.small {
-        font-size: 1rem;
-      }
-
-      .workspace {
-        display: grid;
-        grid-template-columns: 320px minmax(0, 1fr) 420px;
-        gap: 0.7rem;
-        align-items: start;
-      }
-
-      .tiles-column,
-      .viewer-column,
-      .map-panel {
-        min-height: 320px;
-      }
-
-      .tiles-column h3,
-      .map-panel h3,
-      .viewer-column h3 {
-        margin-top: 0;
-        margin-bottom: 0.45rem;
-      }
-
-      .tile-list,
-      .right-tiles {
-        display: grid;
-        gap: 0.55rem;
-      }
-
-      .camera-tile {
-        border: 1px solid #dbe3ef;
-        border-radius: 10px;
-        padding: 0.45rem;
-        background: #fff;
-        display: grid;
-        gap: 0.35rem;
-      }
-
-      .camera-tile.selected {
-        border-color: #2563eb;
-        box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.18);
-      }
-
-      .camera-tile header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 0.45rem;
-      }
-
-      video {
-        width: 100%;
-        border-radius: 8px;
-        background: #020617;
-        min-height: 160px;
-        max-height: 310px;
-        object-fit: cover;
-      }
-
-      .tile-actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.3rem;
-      }
-
-      .map-panel {
-        border: 1px solid #dbe3ef;
-        border-radius: 10px;
-        padding: 0.45rem;
-        background: #fff;
-      }
-
-      .map-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 0.5rem;
-        flex-wrap: wrap;
-      }
-
-      .map-actions {
-        display: flex;
-        gap: 0.4rem;
-      }
-
-      #control-room-map {
-        width: 100%;
-        min-height: 540px;
-        border-radius: 10px;
-        overflow: hidden;
-        border: 1px solid #dbe2eb;
-      }
-
-      .viewer-column {
-        display: grid;
-        gap: 0.6rem;
-      }
-
-      .main-viewer {
-        display: grid;
-        gap: 0.45rem;
-      }
-
-      .debug-panel {
-        border: 1px solid #dbe3ef;
-        border-radius: 8px;
-        padding: 0.45rem;
-        background: #f8fafc;
-        color: #0f172a;
-        display: grid;
-        gap: 0.2rem;
-        font-size: 0.78rem;
-      }
-
-      .debug-panel h4 {
-        margin: 0 0 0.2rem 0;
-        font-size: 0.82rem;
-      }
-
-      .selected-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-        gap: 0.45rem;
-        flex-wrap: wrap;
-      }
-
-      .selected-actions {
-        display: flex;
-        gap: 0.3rem;
-        flex-wrap: wrap;
-      }
-
-      .management-panel {
-        display: grid;
-        gap: 0.45rem;
-      }
-
-      .management-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 0.45rem;
-      }
-
-      .table-wrap {
-        border: 1px solid #e2e8f0;
-        border-radius: 8px;
-        overflow-x: auto;
-      }
-
-      table {
-        width: 100%;
-        border-collapse: collapse;
-      }
-
-      th,
-      td {
-        border-bottom: 1px solid #e2e8f0;
-        padding: 0.45rem;
-        text-align: left;
-        vertical-align: top;
-      }
-
-      .row-actions {
-        display: grid;
-        grid-template-columns: 1fr;
-        gap: 0.2rem;
-      }
-
-      .badge {
-        border-radius: 999px;
-        padding: 0.18rem 0.52rem;
-        font-size: 0.72rem;
-        font-weight: 700;
-      }
-
-      .state-live {
-        background: #dcfce7;
-        color: #166534;
-      }
-
-      .state-connecting,
-      .state-network_weak {
-        background: #fef3c7;
-        color: #92400e;
-      }
-
-      .state-permission_denied,
-      .state-camera_off,
-      .state-ended,
-      .state-failed,
-      .state-offline {
-        background: #fee2e2;
-        color: #991b1b;
-      }
-
-      .tracking-active {
-        background: #dcfce7;
-        color: #166534;
-      }
-
-      .tracking-stale {
-        background: #fef3c7;
-        color: #92400e;
-      }
-
-      .tracking-offline,
-      .tracking-not_enabled {
-        background: #fee2e2;
-        color: #991b1b;
-      }
-
-      .meta {
-        margin: 0;
-        color: #475569;
-        font-size: 0.78rem;
-      }
-
-      .muted {
-        margin: 0;
-        color: #64748b;
-      }
-
-      .small {
-        font-size: 0.78rem;
-      }
-
-      .err {
-        margin: 0;
-        color: #b91c1c;
-      }
-
-      .web-note {
-        margin: 0;
-        color: #334155;
-        font-size: 0.84rem;
-      }
-
-      @media (max-width: 1600px) {
-        .workspace {
-          grid-template-columns: 280px minmax(0, 1fr) 360px;
-        }
-
-        .summary-grid {
-          grid-template-columns: repeat(3, minmax(0, 1fr));
-        }
-      }
-
-      @media (max-width: 1280px) {
-        .workspace {
-          grid-template-columns: 1fr;
-        }
-
-        #control-room-map {
-          min-height: 420px;
-        }
-
-        .summary-grid {
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-
-        .filters {
-          grid-template-columns: 1fr;
-        }
-      }
-
-      @media (max-width: 820px) {
-        .summary-grid {
-          grid-template-columns: 1fr;
-        }
-
-        table,
-        tbody,
-        tr,
-        td {
-          display: block;
-          width: 100%;
-        }
-
-        thead {
-          display: none;
-        }
-
-        td {
-          border: 0;
-          display: flex;
-          justify-content: space-between;
-          gap: 0.6rem;
-        }
-
-        td::before {
-          content: attr(data-label);
-          font-weight: 700;
-          color: #334155;
-        }
-      }
-    `
-  ]
+  templateUrl: "./control-room.page.html",
+  styleUrl: "./control-room.page.css"
 })
 export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
   private readonly api = inject(ApiService);
@@ -689,31 +89,55 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
   private readonly router = inject(Router);
 
   readonly overview = signal<ControlRoomOverviewResponse | null>(null);
+  readonly incidents = signal<IncidentRecord[]>([]);
+  readonly trackingUsers = signal<TrackingOverviewUser[]>([]);
+  readonly cameraLogs = signal<LiveCameraLogRow[]>([]);
+  readonly trackingLogs = signal<TrackingLogRow[]>([]);
+  readonly backendIceDebug = signal<LiveCameraIceDebugSummary | null>(null);
+  readonly eventFeed = signal<ControlEventItem[]>([]);
+  readonly operatorEvents = signal<ControlEventItem[]>([]);
+
   readonly loading = signal(false);
   readonly error = signal<string | null>(null);
   readonly busySessionId = signal<string | null>(null);
   readonly selectedSessionId = signal<string | null>(null);
+  readonly selectedUserId = signal<string | null>(null);
+  readonly selectedIncidentId = signal<string | null>(null);
+  readonly followSelectedUnit = signal(true);
   readonly debugPanelEnabled = signal(false);
+  readonly unitStatusOverrides = signal<Record<string, UnitOperationalStatus>>({});
+  readonly now = signal(new Date().toISOString());
+
+  readonly unitStatusOptions = UNIT_STATUS_OPTIONS;
 
   search = "";
   activeCameraOnly = false;
   liveTrackingOnly = false;
+  emergencyOnly = false;
+  staleOrOfflineOnly = false;
+  activeIncidentsOnly = true;
+  roleFilter: RoleFilter = "ALL";
+  statusFilter: "ALL" | UnitOperationalStatus = "ALL";
 
   private map?: L.Map;
   private readonly peopleLayer = L.layerGroup();
   private readonly incidentLayer = L.layerGroup();
   private readonly peopleMarkersByUserId = new Map<string, L.Marker>();
-  private readonly refreshIntervalMs = 8_000;
-  private refreshTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly incidentMarkersById = new Map<string, L.Marker>();
   private readonly mapCenter: L.LatLngTuple = [33.93444, 35.69972];
+  private readonly refreshIntervalMs = 9_000;
+  private refreshTimer: ReturnType<typeof setInterval> | null = null;
+  private clockTimer: ReturnType<typeof setInterval> | null = null;
 
   ngAfterViewInit() {
+    this.loadUnitStatusOverrides();
     this.initMap();
     void this.camera.connectViewerSignaling().catch(() => {
       this.error.set("Could not connect to live camera signaling.");
     });
     this.refresh();
     this.refreshTimer = setInterval(() => this.refresh(false), this.refreshIntervalMs);
+    this.clockTimer = setInterval(() => this.now.set(new Date().toISOString()), 1_000);
   }
 
   ngOnDestroy() {
@@ -721,8 +145,45 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
       clearInterval(this.refreshTimer);
       this.refreshTimer = null;
     }
+    if (this.clockTimer) {
+      clearInterval(this.clockTimer);
+      this.clockTimer = null;
+    }
     this.camera.disconnectViewerSignaling();
     this.map?.remove();
+  }
+
+  @HostListener("document:keydown", ["$event"])
+  onHotkey(event: KeyboardEvent) {
+    const target = event.target as HTMLElement | null;
+    const tag = target?.tagName?.toLowerCase();
+    const isTyping = tag === "input" || tag === "textarea" || tag === "select" || target?.isContentEditable;
+    if (isTyping) {
+      return;
+    }
+
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      this.openNextStream(true);
+      return;
+    }
+
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      this.openNextStream(false);
+      return;
+    }
+
+    if (event.key.toLowerCase() === "e") {
+      event.preventDefault();
+      this.jumpToEmergencyFocus();
+      return;
+    }
+
+    if (event.key.toLowerCase() === "f") {
+      event.preventDefault();
+      this.toggleFollowSelected();
+    }
   }
 
   refresh(showLoading = true) {
@@ -731,54 +192,341 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
     }
     this.error.set(null);
 
-    this.api
-      .getControlRoomOverview({
-        search: this.search.trim() || undefined,
-        activeCameraOnly: this.activeCameraOnly,
-        liveTrackingOnly: this.liveTrackingOnly,
-        staleAfterSeconds: 120,
-        offlineAfterSeconds: 600,
-        limit: 300
-      })
-      .subscribe({
-        next: (overview) => {
-          this.loading.set(false);
-          this.overview.set(overview);
-          this.syncSelection(overview.cameraSessions);
-          void this.camera.syncViewerSessions(overview.cameraSessions);
-          this.renderMap(overview);
-        },
-        error: (err) => {
-          this.loading.set(false);
-          if (showLoading) {
-            this.overview.set(null);
-          }
-          this.error.set(String(err?.error?.message ?? "Could not load Control Room data."));
+    const search = this.search.trim();
+    const overview$ = this.api.getControlRoomOverview({
+      search: search || undefined,
+      activeCameraOnly: this.activeCameraOnly,
+      liveTrackingOnly: this.liveTrackingOnly,
+      staleAfterSeconds: 120,
+      offlineAfterSeconds: 600,
+      limit: 300
+    });
+
+    const incidents$ = this.api.get<IncidentRecord[]>("/incidents").pipe(catchError(() => of([] as IncidentRecord[])));
+
+    const cameraLogs$ = this.api
+      .getLiveCameraLogs({ page: 1, pageSize: 40 })
+      .pipe(catchError(() => of({ page: 1, pageSize: 40, total: 0, items: [] as LiveCameraLogRow[] })));
+
+    const trackingLogs$ = this.api
+      .getTrackingLogs({ page: 1, pageSize: 40 })
+      .pipe(catchError(() => of({ page: 1, pageSize: 40, total: 0, items: [] as TrackingLogRow[] })));
+
+    const trackingUsers$ = this.api.getTrackingUsersOverview({ limit: 300 }).pipe(
+      catchError(() =>
+        of({
+          generatedAt: new Date().toISOString(),
+          staleAfterSeconds: 120,
+          offlineAfterSeconds: 600,
+          users: [] as TrackingOverviewUser[]
+        })
+      )
+    );
+
+    const iceDebug$ = this.api.getLiveCameraIceConfigDebug().pipe(catchError(() => of(null)));
+
+    forkJoin({
+      overview: overview$,
+      incidents: incidents$,
+      cameraLogs: cameraLogs$,
+      trackingLogs: trackingLogs$,
+      trackingUsers: trackingUsers$,
+      iceDebug: iceDebug$
+    }).subscribe({
+      next: ({ overview, incidents, cameraLogs, trackingLogs, trackingUsers, iceDebug }) => {
+        this.loading.set(false);
+        this.overview.set(overview);
+        this.incidents.set(incidents);
+        this.cameraLogs.set(cameraLogs.items);
+        this.trackingLogs.set(trackingLogs.items);
+        this.trackingUsers.set(trackingUsers.users);
+        this.backendIceDebug.set(iceDebug);
+
+        this.syncSelection(overview.cameraSessions);
+        void this.camera.syncViewerSessions(overview.cameraSessions);
+        this.rebuildEventFeed(this.cameraLogs(), this.trackingLogs(), incidents);
+        this.renderMap(overview);
+      },
+      error: (err) => {
+        this.loading.set(false);
+        if (showLoading) {
+          this.overview.set(null);
         }
+        this.error.set(String(err?.error?.message ?? "Could not load Control Room data."));
+      }
+    });
+  }
+
+  applyLocalViewState() {
+    const overview = this.overview();
+    if (!overview) {
+      return;
+    }
+    this.syncSelection(overview.cameraSessions);
+    this.rebuildEventFeed(this.cameraLogs(), this.trackingLogs(), this.incidents());
+    this.renderMap(overview);
+  }
+
+  toggleFollowSelected() {
+    this.followSelectedUnit.set(!this.followSelectedUnit());
+    if (this.followSelectedUnit()) {
+      this.focusSelectedOnMap();
+    }
+  }
+
+  nowLabel() {
+    return new Date(this.now()).toLocaleString();
+  }
+
+  boolLabel(value: boolean | null | undefined) {
+    if (value == null) {
+      return "-";
+    }
+    return value ? "Yes" : "No";
+  }
+
+  numberLabel(value: number | null | undefined) {
+    if (value == null) {
+      return "-";
+    }
+    return value.toLocaleString();
+  }
+
+  hasRuntimeTurn() {
+    return this.camera.iceRuntimeSummary().turnPresent;
+  }
+
+  isAdmin() {
+    return this.auth.currentUser()?.role === "ADMIN";
+  }
+
+  isOperator() {
+    const role = this.auth.currentUser()?.role as Role | undefined;
+    return role === "ADMIN" || role === "CASE_WORKER" || role === "POLICE";
+  }
+
+  canManageIncidents() {
+    const role = this.auth.currentUser()?.role as Role | undefined;
+    return role === "ADMIN" || role === "CASE_WORKER";
+  }
+
+  selectedSession() {
+    const selectedId = this.selectedSessionId();
+    if (!selectedId) {
+      return null;
+    }
+    return (this.overview()?.cameraSessions ?? []).find((session) => session.id === selectedId) ?? null;
+  }
+
+  selectedIncident() {
+    const selectedId = this.selectedIncidentId();
+    if (!selectedId) {
+      return null;
+    }
+    return this.incidents().find((incident) => incident.id === selectedId) ?? null;
+  }
+
+  selectedUnitRow() {
+    const selectedUserId = this.selectedUserId();
+    if (selectedUserId) {
+      const byUser = this.userRowById(selectedUserId);
+      if (byUser) {
+        return byUser;
+      }
+    }
+    const selectedSession = this.selectedSession();
+    if (selectedSession) {
+      return this.userRowById(selectedSession.userId);
+    }
+    return this.filteredUsers()[0] ?? null;
+  }
+
+  selectedDiagnostics() {
+    const selected = this.selectedSession();
+    if (!selected) {
+      return null;
+    }
+    return this.camera.viewerDiagnostics()[selected.id] ?? null;
+  }
+
+  selectedUnitStatusLabel() {
+    const selected = this.selectedUnitRow();
+    if (!selected) {
+      return "-";
+    }
+    return this.unitStatusForUser(selected.userId);
+  }
+
+  activeIncidents() {
+    const search = this.search.trim().toLowerCase();
+    const base = this.activeIncidentsOnly ? this.operationalIncidents() : this.incidents();
+    return base
+      .filter((incident) => this.matchesIncidentRoleFilter(incident))
+      .filter((incident) => (this.emergencyOnly ? this.incidentBucket(incident) === "EMERGENCY" : true))
+      .filter((incident) => {
+        if (!search) {
+          return true;
+        }
+        return (
+          incident.incidentCode.toLowerCase().includes(search) ||
+          String(incident.title ?? "").toLowerCase().includes(search) ||
+          incident.type.toLowerCase().includes(search)
+        );
+      })
+      .sort((a, b) => {
+        const bucketDiff = this.incidentBucketRank(this.incidentBucket(a)) - this.incidentBucketRank(this.incidentBucket(b));
+        if (bucketDiff !== 0) {
+          return bucketDiff;
+        }
+        return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
       });
   }
 
-  leftTiles() {
-    const sessions = this.overview()?.cameraSessions ?? [];
-    return sessions.filter((_, index) => index % 2 === 0);
+  private operationalIncidents() {
+    return this.incidents()
+      .filter((incident) => ACTIVE_INCIDENT_STATUSES.has(incident.status))
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   }
 
-  rightTiles() {
-    const sessions = this.overview()?.cameraSessions ?? [];
-    return sessions.filter((_, index) => index % 2 !== 0);
+  incidentGroups() {
+    const incidents = this.activeIncidents();
+    return [
+      {
+        key: "EMERGENCY" as IncidentBucket,
+        label: "Emergency",
+        items: incidents.filter((item) => this.incidentBucket(item) === "EMERGENCY")
+      },
+      {
+        key: "HIGH" as IncidentBucket,
+        label: "High",
+        items: incidents.filter((item) => this.incidentBucket(item) === "HIGH")
+      },
+      {
+        key: "MEDIUM" as IncidentBucket,
+        label: "Medium",
+        items: incidents.filter((item) => this.incidentBucket(item) === "MEDIUM")
+      },
+      {
+        key: "LOW" as IncidentBucket,
+        label: "Low",
+        items: incidents.filter((item) => this.incidentBucket(item) === "LOW")
+      }
+    ];
+  }
+
+  incidentBucket(incident: IncidentRecord): IncidentBucket {
+    if (incident.severity === "CRITICAL") {
+      return "EMERGENCY";
+    }
+    if (incident.priority === "HIGH" || incident.severity === "HIGH") {
+      return "HIGH";
+    }
+    if (incident.priority === "MEDIUM" || incident.severity === "MEDIUM") {
+      return "MEDIUM";
+    }
+    return "LOW";
+  }
+
+  incidentPillClass(incident: IncidentRecord) {
+    return `st-pill-${this.incidentBucket(incident).toLowerCase()}`;
+  }
+
+  emergencyAlertsCount() {
+    const emergencySessions = this.filteredSessions().filter((session) => this.isSessionEmergency(session)).length;
+    const emergencyIncidents = this.activeIncidents().filter((incident) => this.incidentBucket(incident) === "EMERGENCY").length;
+    return emergencySessions + emergencyIncidents;
+  }
+
+  staleOrOfflineCount() {
+    return this.filteredUsers().filter((row) => this.isStaleOrOffline(row)).length;
+  }
+
+  isEmergencyMode() {
+    const selectedSession = this.selectedSession();
+    const selectedIncident = this.selectedIncident();
+    return Boolean(
+      (selectedSession && this.isSessionEmergency(selectedSession)) ||
+      (selectedIncident && this.incidentBucket(selectedIncident) === "EMERGENCY")
+    );
+  }
+
+  filteredUsers() {
+    const overview = this.overview();
+    if (!overview) {
+      return [];
+    }
+    const search = this.search.trim().toLowerCase();
+    return overview.users
+      .filter((row) => this.matchesRoleFilter(row.role))
+      .filter((row) => (this.staleOrOfflineOnly ? this.isStaleOrOffline(row) : true))
+      .filter((row) => (this.emergencyOnly ? this.isUserInEmergency(row.userId) : true))
+      .filter((row) => (this.statusFilter !== "ALL" ? this.unitStatusForUser(row.userId) === this.statusFilter : true))
+      .filter((row) => {
+        if (!search) {
+          return true;
+        }
+        return (
+          row.name.toLowerCase().includes(search) ||
+          row.email.toLowerCase().includes(search) ||
+          row.userId.toLowerCase().includes(search)
+        );
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  filteredSessions() {
+    return (this.overview()?.cameraSessions ?? [])
+      .filter((session) => this.matchesRoleFilter(session.user.role))
+      .filter((session) => (this.emergencyOnly ? this.isSessionEmergency(session) : true))
+      .filter((session) => {
+        if (!this.staleOrOfflineOnly) {
+          return true;
+        }
+        const row = this.userRowById(session.userId);
+        return row ? this.isStaleOrOffline(row) : false;
+      })
+      .filter((session) => (this.statusFilter !== "ALL" ? this.unitStatusForUser(session.userId) === this.statusFilter : true))
+      .filter((session) => {
+        const search = this.search.trim().toLowerCase();
+        if (!search) {
+          return true;
+        }
+        return (
+          session.user.fullName.toLowerCase().includes(search) ||
+          session.user.role.toLowerCase().includes(search) ||
+          session.id.toLowerCase().includes(search)
+        );
+      })
+      .sort((a, b) => {
+        if (this.isSessionEmergency(a) && !this.isSessionEmergency(b)) {
+          return -1;
+        }
+        if (!this.isSessionEmergency(a) && this.isSessionEmergency(b)) {
+          return 1;
+        }
+        return new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime();
+      });
+  }
+
+  secondarySessions() {
+    const selected = this.selectedSessionId();
+    return this.filteredSessions().filter((session) => session.id !== selected);
   }
 
   trackBySessionId(_index: number, session: LiveCameraSessionRecord) {
     return session.id;
   }
 
-  selectedSession() {
-    const sessions = this.overview()?.cameraSessions ?? [];
-    const selectedId = this.selectedSessionId();
-    if (!selectedId) {
-      return null;
-    }
-    return sessions.find((session) => session.id === selectedId) ?? null;
+  trackByIncidentId(_index: number, incident: IncidentRecord) {
+    return incident.id;
+  }
+
+  trackByEventId(_index: number, event: ControlEventItem) {
+    return event.id;
+  }
+
+  trackByUserId(_index: number, row: ControlRoomUserRow) {
+    return row.userId;
   }
 
   isSelected(sessionId: string) {
@@ -822,49 +570,99 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
     return this.camera.viewerSessionState()[session.id] ?? session.sessionStatus;
   }
 
-  tileStateClass(session: LiveCameraSessionRecord) {
-    return `state-${this.tileState(session).toLowerCase()}`;
-  }
-
-  trackingBadgeClass(state: string) {
-    return `tracking-${state.toLowerCase()}`;
-  }
-
-  cameraBadgeClass(state: LiveCameraSessionStatus) {
-    return `state-${state.toLowerCase()}`;
-  }
-
   selectSession(sessionId: string, cause: SelectCause) {
     if (this.selectedSessionId() === sessionId && cause !== "MAP") {
       return;
     }
 
+    const session = (this.overview()?.cameraSessions ?? []).find((row) => row.id === sessionId) ?? null;
+    if (!session) {
+      return;
+    }
+
     this.selectedSessionId.set(sessionId);
-    const session = (this.overview()?.cameraSessions ?? []).find((row) => row.id === sessionId);
-    if (session) {
-      this.camera.focusSessionOnViewer(session, cause === "SWITCH" ? "SWITCH" : "SELECT");
+    this.selectedUserId.set(session.userId);
+    this.camera.focusSessionOnViewer(session, cause === "SWITCH" ? "SWITCH" : "SELECT");
+
+    if (this.followSelectedUnit()) {
       this.focusUserOnMap(session.userId);
     }
     this.renderMap(this.overview());
   }
 
-  onMediaStreamBinding(state: MediaStreamBindingState, scope: "tile" | "main") {
-    this.camera.reportMediaStreamBindingState(state, scope);
-  }
-
-  selectedDiagnostics() {
-    const selected = this.selectedSession();
-    if (!selected) {
-      return null;
+  selectUser(userId: string, source: "MAP" | "PANEL" | "STREAM" | "INCIDENT") {
+    this.selectedUserId.set(userId);
+    if (this.followSelectedUnit() || source === "MAP" || source === "INCIDENT") {
+      this.focusUserOnMap(userId);
     }
-    return this.camera.viewerDiagnostics()[selected.id] ?? null;
+
+    const session = this.sessionForUser(userId);
+    if (session) {
+      this.selectedSessionId.set(session.id);
+      this.camera.focusSessionOnViewer(session, source === "STREAM" ? "SWITCH" : "SELECT");
+    }
+
+    this.renderMap(this.overview());
   }
 
-  openRowStream(row: ControlRoomUserRow) {
-    if (!row.activeCameraSessionId) {
+  selectIncident(incidentId: string, focusMap: boolean) {
+    const incident = this.incidents().find((item) => item.id === incidentId) ?? null;
+    if (!incident) {
       return;
     }
-    this.selectSession(row.activeCameraSessionId, "SELECT");
+
+    this.selectedIncidentId.set(incident.id);
+    if (incident.assignedUserId) {
+      this.selectUser(incident.assignedUserId, "INCIDENT");
+    }
+
+    if (focusMap) {
+      this.focusIncidentOnMap(incident.id);
+    }
+    this.renderMap(this.overview());
+  }
+
+  jumpToEmergencyFocus() {
+    const emergencySession = this.filteredSessions().find((session) => this.isSessionEmergency(session));
+    if (emergencySession) {
+      this.selectSession(emergencySession.id, "SELECT");
+      this.addOperatorEvent({
+        level: "EMERGENCY",
+        label: "Emergency stream prioritized",
+        detail: emergencySession.user.fullName,
+        userId: emergencySession.userId,
+        sessionId: emergencySession.id
+      });
+      return;
+    }
+
+    const emergencyIncident = this.activeIncidents().find((incident) => this.incidentBucket(incident) === "EMERGENCY");
+    if (emergencyIncident) {
+      this.selectIncident(emergencyIncident.id, true);
+      this.addOperatorEvent({
+        level: "EMERGENCY",
+        label: "Emergency incident prioritized",
+        detail: emergencyIncident.incidentCode,
+        incidentId: emergencyIncident.id
+      });
+    }
+  }
+
+  openNextStream(forward: boolean) {
+    const sessions = this.filteredSessions();
+    if (!sessions.length) {
+      return;
+    }
+
+    const selectedId = this.selectedSessionId();
+    const currentIndex = sessions.findIndex((session) => session.id === selectedId);
+    if (currentIndex < 0) {
+      this.selectSession(sessions[0].id, "SELECT");
+      return;
+    }
+
+    const nextIndex = (currentIndex + (forward ? 1 : -1) + sessions.length) % sessions.length;
+    this.selectSession(sessions[nextIndex].id, "SWITCH");
   }
 
   focusUserOnMap(userId: string) {
@@ -880,14 +678,33 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
     const zoom = Math.max(this.map.getZoom(), 16);
     this.map.flyTo(marker.getLatLng(), zoom, { duration: 0.35 });
     marker.openPopup();
+    this.selectedUserId.set(userId);
+    this.renderMap(this.overview());
   }
 
   focusSelectedOnMap() {
-    const selected = this.selectedSession();
+    const selected = this.selectedUserId();
     if (!selected) {
       return;
     }
-    this.focusUserOnMap(selected.userId);
+    this.focusUserOnMap(selected);
+  }
+
+  focusIncidentOnMap(incidentId: string) {
+    if (!this.map) {
+      return;
+    }
+
+    const marker = this.incidentMarkersById.get(incidentId);
+    if (!marker) {
+      return;
+    }
+
+    const zoom = Math.max(this.map.getZoom(), 15);
+    this.map.flyTo(marker.getLatLng(), zoom, { duration: 0.35 });
+    marker.openPopup();
+    this.selectedIncidentId.set(incidentId);
+    this.renderMap(this.overview());
   }
 
   fitMapBounds() {
@@ -895,14 +712,20 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
       return;
     }
 
-    const points = [...this.peopleMarkersByUserId.values()].map((marker) => marker.getLatLng());
+    const points: L.LatLng[] = [];
+    for (const marker of this.peopleMarkersByUserId.values()) {
+      points.push(marker.getLatLng());
+    }
+    for (const marker of this.incidentMarkersById.values()) {
+      points.push(marker.getLatLng());
+    }
+
     if (!points.length) {
       this.map.setView(this.mapCenter, 14);
       return;
     }
 
-    const bounds = L.latLngBounds(points);
-    this.map.fitBounds(bounds.pad(0.15));
+    this.map.fitBounds(L.latLngBounds(points).pad(0.15));
   }
 
   requestFullscreen(video: HTMLVideoElement) {
@@ -910,6 +733,61 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
       return;
     }
     void video.requestFullscreen?.();
+  }
+
+  onMediaStreamBinding(state: MediaStreamBindingState, scope: "tile" | "main") {
+    this.camera.reportMediaStreamBindingState(state, scope);
+  }
+
+  openRowStream(row: ControlRoomUserRow) {
+    if (!row.activeCameraSessionId) {
+      return;
+    }
+    this.selectSession(row.activeCameraSessionId, "SELECT");
+  }
+
+  viewCameraLogs(userId: string) {
+    void this.router.navigate(["/live-camera-logs"], { queryParams: { userId } });
+  }
+
+  viewTrackingLogs(userId: string) {
+    void this.router.navigate(["/tracking-logs"], { queryParams: { userId } });
+  }
+
+  openUserProfile(userId: string) {
+    if (!this.isAdmin()) {
+      return;
+    }
+    void this.router.navigate(["/users"], { queryParams: { userId } });
+  }
+
+  openIncidentDetails(incidentId: string) {
+    void this.router.navigate(["/incidents", incidentId]);
+  }
+
+  requestLocationForUser(userId: string) {
+    if (!this.isOperator()) {
+      return;
+    }
+
+    this.api.createTrackingPing(userId, "Control Room: location update requested", 120).subscribe({
+      next: (ping) => {
+        this.addOperatorEvent({
+          level: "INFO",
+          label: "Location request sent",
+          detail: `${userId.slice(0, 8)} | ${ping.status}`,
+          userId
+        });
+      },
+      error: () => {
+        this.addOperatorEvent({
+          level: "WARN",
+          label: "Location request failed",
+          detail: userId.slice(0, 8),
+          userId
+        });
+      }
+    });
   }
 
   stopSession(sessionId: string | null) {
@@ -921,6 +799,12 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
     this.api.stopLiveCameraSession(sessionId, "STOPPED_BY_OPERATOR").subscribe({
       next: () => {
         this.busySessionId.set(null);
+        this.addOperatorEvent({
+          level: "WARN",
+          label: "Stream stopped by operator",
+          detail: sessionId.slice(0, 8),
+          sessionId
+        });
         this.refresh(false);
       },
       error: (err) => {
@@ -930,16 +814,78 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
     });
   }
 
-  viewLogs(userId: string) {
-    void this.router.navigate(["/live-camera-logs"], { queryParams: { userId } });
+  assignIncidentToSelectedUnit() {
+    if (!this.canManageIncidents()) {
+      return;
+    }
+    const incident = this.selectedIncident();
+    const unit = this.selectedUnitRow();
+    if (!incident || !unit) {
+      return;
+    }
+
+    this.api
+      .patch<IncidentRecord>(`/incidents/${incident.id}`, {
+        assignedUserId: unit.userId,
+        status: "ACTIVE_RESPONSE"
+      })
+      .subscribe({
+        next: (updated) => {
+          this.patchIncident(updated);
+          this.selectedIncidentId.set(updated.id);
+          this.setUnitStatus(unit.userId, "RESPONDING");
+          this.addOperatorEvent({
+            level: "INFO",
+            label: "Incident assigned",
+            detail: `${updated.incidentCode} -> ${unit.name}`,
+            userId: unit.userId,
+            incidentId: updated.id
+          });
+        },
+        error: (err) => {
+          this.error.set(String(err?.error?.message ?? "Could not assign incident."));
+        }
+      });
+  }
+
+  escalateSelectedIncident() {
+    if (!this.canManageIncidents()) {
+      return;
+    }
+    const incident = this.selectedIncident();
+    if (!incident) {
+      return;
+    }
+
+    this.api
+      .patch<IncidentRecord>(`/incidents/${incident.id}`, {
+        priority: "HIGH",
+        severity: "CRITICAL"
+      })
+      .subscribe({
+        next: (updated) => {
+          this.patchIncident(updated);
+          this.selectedIncidentId.set(updated.id);
+          this.addOperatorEvent({
+            level: "EMERGENCY",
+            label: "Incident escalated",
+            detail: `${updated.incidentCode} set to CRITICAL`,
+            incidentId: updated.id
+          });
+        },
+        error: (err) => {
+          this.error.set(String(err?.error?.message ?? "Could not escalate incident."));
+        }
+      });
   }
 
   createIncidentFromStream(session: LiveCameraSessionRecord) {
     const lat = session.location?.latitude ?? null;
     const lng = session.location?.longitude ?? null;
-    const label = session.location?.latitude != null && session.location?.longitude != null
-      ? `Live camera stream - ${session.user.fullName}`
-      : `Live camera stream - ${session.user.fullName} (location unavailable)`;
+    const label =
+      session.location?.latitude != null && session.location?.longitude != null
+        ? `Live camera stream - ${session.user.fullName}`
+        : `Live camera stream - ${session.user.fullName} (location unavailable)`;
 
     void this.router.navigate(["/incidents"], {
       queryParams: {
@@ -949,9 +895,91 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
         locationLabel: label,
         locationLat: lat ?? undefined,
         locationLng: lng ?? undefined,
-        locationSource: "LIVE_TRACKING_RECENT"
+        locationSource: "LIVE_TRACKING_RECENT",
+        sourceSessionId: session.id
       }
     });
+  }
+
+  setUnitStatus(userId: string, status: UnitOperationalStatus) {
+    if (!this.isOperator()) {
+      return;
+    }
+    this.unitStatusOverrides.update((rows) => ({ ...rows, [userId]: status }));
+    this.persistUnitStatusOverrides();
+    this.addOperatorEvent({
+      level: status === "EMERGENCY" ? "EMERGENCY" : "INFO",
+      label: "Unit status changed",
+      detail: `${userId.slice(0, 8)} -> ${status}`,
+      userId
+    });
+    this.renderMap(this.overview());
+  }
+
+  unitStatusForUser(userId: string): UnitOperationalStatus {
+    const override = this.unitStatusOverrides()[userId];
+    if (override) {
+      return override;
+    }
+
+    const row = this.userRowById(userId);
+    const activeIncident = this.linkedIncidentForUser(userId);
+    const session = this.sessionForUser(userId);
+
+    if (session?.emergency) {
+      return "EMERGENCY";
+    }
+    if (activeIncident && this.incidentBucket(activeIncident) === "EMERGENCY") {
+      return "EMERGENCY";
+    }
+    if (!row) {
+      return "OFFLINE";
+    }
+    if (row.trackingHealthState === "OFFLINE" || row.cameraStatus === "OFFLINE") {
+      return "OFFLINE";
+    }
+    if (activeIncident) {
+      if (activeIncident.status === "ACTIVE_RESPONSE" || activeIncident.status === "IN_PROGRESS") {
+        return "RESPONDING";
+      }
+      if (activeIncident.status === "CONTAINED") {
+        return "ON_SCENE";
+      }
+      return "ASSIGNED";
+    }
+    if (row.liveCameraActive || row.liveTrackingActive || row.trackingHealthState === "ACTIVE") {
+      return "AVAILABLE";
+    }
+    return "OFFLINE";
+  }
+
+  statusPillClass(status: UnitOperationalStatus) {
+    return `st-pill-${status.toLowerCase()}`;
+  }
+
+  linkedIncidentLabel(userId: string) {
+    const incident = this.linkedIncidentForUser(userId);
+    if (!incident) {
+      return "-";
+    }
+    return `${incident.incidentCode} (${incident.status})`;
+  }
+
+  incidentAssignedName(incident: IncidentRecord) {
+    if (!incident.assignedUserId) {
+      return "Unassigned";
+    }
+    const row = this.userRowById(incident.assignedUserId);
+    return row?.name ?? `${incident.assignedUserId.slice(0, 8)}...`;
+  }
+
+  trackingSnapshotForUser(userId: string) {
+    return this.trackingUsers().find((row) => row.userId === userId) ?? null;
+  }
+
+  mapFreshnessForUser(userId: string) {
+    const mapUser = (this.overview()?.mapUsers ?? []).find((row) => row.userId === userId) ?? null;
+    return mapUser?.freshnessSeconds ?? null;
   }
 
   formatFreshness(value: number | null) {
@@ -961,18 +989,132 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
     if (value < 60) {
       return `${value}s ago`;
     }
-    const minutes = Math.round(value / 60);
-    return `${minutes}m ago`;
+    return `${Math.round(value / 60)}m ago`;
   }
 
-  private syncSelection(sessions: LiveCameraSessionRecord[]) {
-    const selectedId = this.selectedSessionId();
-    if (selectedId && sessions.some((session) => session.id === selectedId)) {
+  private rebuildEventFeed(cameraLogs: LiveCameraLogRow[], trackingLogs: TrackingLogRow[], incidents: IncidentRecord[]) {
+    const incidentEvents = incidents.slice(0, 30).map((incident) => ({
+      id: `incident-${incident.id}-${incident.updatedAt}`,
+      at: incident.updatedAt,
+      source: "INCIDENT" as const,
+      level: this.incidentBucket(incident) === "EMERGENCY" ? ("EMERGENCY" as EventLevel) : ("INFO" as EventLevel),
+      label: `Incident ${incident.incidentCode}`,
+      detail: `${incident.title || incident.type} | ${incident.status} | ${incident.priority}`,
+      userId: incident.assignedUserId ?? null,
+      sessionId: null,
+      incidentId: incident.id
+    }));
+
+    const cameraEvents = cameraLogs.map((row) => {
+      const level: EventLevel =
+        row.eventType === "CAMERA_PERMISSION_DENIED" ||
+        row.eventType === "CAMERA_STREAM_ENDED_UNEXPECTEDLY" ||
+        row.eventType === "TRUSTED_DEVICE_MISMATCH_BLOCKED_CAMERA_START"
+          ? "WARN"
+          : row.eventType === "CAMERA_SESSION_STARTED" && this.isEmergencyMetadata(row.metadata)
+            ? "EMERGENCY"
+            : "INFO";
+
+      return {
+        id: `camera-${row.id}`,
+        at: row.createdAt,
+        source: "CAMERA" as const,
+        level,
+        label: row.eventType,
+        detail: row.eventSummary || row.user.fullName,
+        userId: row.userId,
+        sessionId: row.liveCameraSessionId,
+        incidentId: null
+      };
+    });
+
+    const trackingEvents = trackingLogs.map((row) => {
+      const warnTypes = new Set([
+        "LIVE_TRACKING_BECAME_STALE",
+        "PING_FAILED",
+        "GEOLOCATION_PERMISSION_DENIED",
+        "GEOLOCATION_UNAVAILABLE",
+        "UNAUTHORIZED_TRACKING_ACTION_ATTEMPT",
+        "TRUSTED_DEVICE_RESET"
+      ]);
+      const level: EventLevel = warnTypes.has(row.eventType) ? "WARN" : "INFO";
+      return {
+        id: `tracking-${row.id}`,
+        at: row.timestamp,
+        source: "TRACKING" as const,
+        level,
+        label: row.eventType,
+        detail: row.summary || row.user.fullName,
+        userId: row.user.id,
+        sessionId: row.relatedSessionId,
+        incidentId: null
+      };
+    });
+
+    const merged = [...this.operatorEvents(), ...incidentEvents, ...cameraEvents, ...trackingEvents]
+      .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
+      .slice(0, 80);
+
+    this.eventFeed.set(merged);
+  }
+
+  private addOperatorEvent(options: {
+    level: EventLevel;
+    label: string;
+    detail: string;
+    userId?: string | null;
+    sessionId?: string | null;
+    incidentId?: string | null;
+  }) {
+    const event: ControlEventItem = {
+      id: `operator-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      at: new Date().toISOString(),
+      source: "OPERATOR",
+      level: options.level,
+      label: options.label,
+      detail: options.detail,
+      userId: options.userId ?? null,
+      sessionId: options.sessionId ?? null,
+      incidentId: options.incidentId ?? null
+    };
+
+    this.operatorEvents.update((rows) => [event, ...rows].slice(0, 40));
+    this.rebuildEventFeed(this.cameraLogs(), this.trackingLogs(), this.incidents());
+  }
+
+  private syncSelection(allSessions: LiveCameraSessionRecord[]) {
+    const visibleSessions = this.filteredSessions();
+    const source = visibleSessions.length ? visibleSessions : allSessions;
+    const selectedSessionId = this.selectedSessionId();
+
+    if (!selectedSessionId || !source.some((session) => session.id === selectedSessionId)) {
+      const fallback = this.pickSessionFallback(source);
+      this.selectedSessionId.set(fallback?.id ?? null);
+      if (fallback) {
+        this.selectedUserId.set(fallback.userId);
+      }
+    }
+
+    const selectedUser = this.selectedUserId();
+    const users = this.filteredUsers();
+    if (selectedUser && users.some((row) => row.userId === selectedUser)) {
       return;
     }
 
-    const fallback = sessions[0]?.id ?? null;
-    this.selectedSessionId.set(fallback);
+    const selectedSession = this.selectedSession();
+    if (selectedSession) {
+      this.selectedUserId.set(selectedSession.userId);
+      return;
+    }
+
+    this.selectedUserId.set(users[0]?.userId ?? null);
+  }
+
+  private pickSessionFallback(sessions: LiveCameraSessionRecord[]) {
+    if (!sessions.length) {
+      return null;
+    }
+    return sessions.find((session) => this.isSessionEmergency(session)) ?? sessions[0];
   }
 
   private initMap() {
@@ -986,24 +1128,10 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
       maxZoom: 21
     });
 
-    L.tileLayer(
-      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-      {
-        attribution: "Tiles © Esri, Maxar, Earthstar Geographics",
-        maxNativeZoom: 19,
-        maxZoom: 21
-      }
-    ).addTo(this.map);
-
-    L.tileLayer(
-      "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
-      {
-        attribution: "Labels © Esri",
-        opacity: 0.9,
-        maxNativeZoom: 19,
-        maxZoom: 21
-      }
-    ).addTo(this.map);
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+      attribution: "© OpenStreetMap contributors © CARTO",
+      maxZoom: 20
+    }).addTo(this.map);
 
     this.peopleLayer.addTo(this.map);
     this.incidentLayer.addTo(this.map);
@@ -1017,33 +1145,36 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
     this.peopleLayer.clearLayers();
     this.incidentLayer.clearLayers();
     this.peopleMarkersByUserId.clear();
+    this.incidentMarkersById.clear();
 
-    const selected = this.selectedSession();
-    const selectedUserId = selected?.userId ?? null;
+    const selectedUserId = this.selectedUserId();
+    const selectedIncidentId = this.selectedIncidentId();
 
-    for (const user of overview.mapUsers) {
+    for (const user of this.filteredMapUsers(overview)) {
+      const status = this.unitStatusForUser(user.userId);
       const marker = L.marker([user.latitude, user.longitude], {
-        icon: this.createUserIcon(user, user.userId === selectedUserId)
+        icon: this.createUserIcon(user, user.userId === selectedUserId, status, this.isUserInEmergency(user.userId))
       });
 
       const matchingSession = overview.cameraSessions.find((session) => session.userId === user.userId) ?? null;
-      const popupHtml = this.buildUserPopupHtml(user, matchingSession?.id ?? null);
-      marker.bindPopup(popupHtml);
+      marker.bindPopup(this.buildUserPopupHtml(user, status, matchingSession?.id ?? null));
 
       marker.on("popupopen", () => {
         const popupElement = marker.getPopup()?.getElement() ?? null;
         const openButton = popupElement?.querySelector<HTMLButtonElement>("button[data-session-id]");
-        if (openButton) {
-          openButton.onclick = () => {
-            const sessionId = String(openButton.dataset["sessionId"] ?? "");
-            if (sessionId) {
-              this.selectSession(sessionId, "MAP");
-            }
-          };
+        if (!openButton) {
+          return;
         }
+        openButton.onclick = () => {
+          const sessionId = String(openButton.dataset["sessionId"] ?? "");
+          if (sessionId) {
+            this.selectSession(sessionId, "MAP");
+          }
+        };
       });
 
       marker.on("click", () => {
+        this.selectUser(user.userId, "MAP");
         if (matchingSession) {
           this.selectSession(matchingSession.id, "MAP");
         }
@@ -1053,60 +1184,211 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
       this.peopleMarkersByUserId.set(user.userId, marker);
     }
 
-    for (const incident of overview.incidentMarkers) {
+    for (const incident of this.activeIncidents()) {
+      if (incident.locationLat == null || incident.locationLng == null) {
+        continue;
+      }
+
       const marker = L.marker([incident.locationLat, incident.locationLng], {
-        icon: L.divIcon({
-          className: "",
-          iconSize: [26, 26],
-          iconAnchor: [13, 13],
-          popupAnchor: [0, -12],
-          html: `<div style="width:26px;height:26px;border-radius:999px;background:#b91c1c;border:2px solid #fee2e2;color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;">!</div>`
-        })
+        icon: this.createIncidentIcon(incident, selectedIncidentId === incident.id)
       });
 
       marker.bindPopup(
         `${this.escapeHtml(incident.incidentCode)} | ${this.escapeHtml(incident.title || incident.type)} | ${this.escapeHtml(incident.status)}`
       );
+
+      marker.on("click", () => this.selectIncident(incident.id, false));
       marker.addTo(this.incidentLayer);
+      this.incidentMarkersById.set(incident.id, marker);
+    }
+
+    if (this.followSelectedUnit() && selectedUserId) {
+      const marker = this.peopleMarkersByUserId.get(selectedUserId);
+      if (marker) {
+        this.map.panTo(marker.getLatLng(), { animate: true, duration: 0.25 });
+      }
     }
   }
 
-  private createUserIcon(user: ControlRoomMapUser, selected: boolean) {
-    const healthColor =
-      user.trackingHealthState === "ACTIVE"
-        ? "#16a34a"
-        : user.trackingHealthState === "STALE"
-          ? "#f59e0b"
-          : user.trackingHealthState === "OFFLINE"
-            ? "#b91c1c"
-            : "#64748b";
+  private filteredMapUsers(overview: ControlRoomOverviewResponse) {
+    const userLookup = new Map(overview.users.map((row) => [row.userId, row]));
+    const search = this.search.trim().toLowerCase();
+    return overview.mapUsers
+      .filter((user) => this.matchesRoleFilter(user.role))
+      .filter((user) => (this.staleOrOfflineOnly ? this.isStaleOrOffline(userLookup.get(user.userId) ?? null) : true))
+      .filter((user) => (this.emergencyOnly ? this.isUserInEmergency(user.userId) : true))
+      .filter((user) => (this.statusFilter !== "ALL" ? this.unitStatusForUser(user.userId) === this.statusFilter : true))
+      .filter((user) => {
+        if (!search) {
+          return true;
+        }
+        return (
+          user.fullName.toLowerCase().includes(search) ||
+          user.role.toLowerCase().includes(search) ||
+          user.userId.toLowerCase().includes(search)
+        );
+      });
+  }
+
+  private createUserIcon(
+    user: ControlRoomMapUser,
+    selected: boolean,
+    status: UnitOperationalStatus,
+    emergency: boolean
+  ) {
+    const color =
+      status === "EMERGENCY"
+        ? "#ef4444"
+        : status === "RESPONDING"
+          ? "#f97316"
+          : status === "ON_SCENE"
+            ? "#38bdf8"
+            : status === "ASSIGNED"
+              ? "#f59e0b"
+              : status === "OFFLINE"
+                ? "#64748b"
+                : "#22c55e";
 
     const cameraDot = user.hasActiveCamera
-      ? `<span style="position:absolute;right:-3px;bottom:-3px;width:13px;height:13px;border-radius:999px;background:#ef4444;border:2px solid #fff;"></span>`
+      ? `<span style="position:absolute;right:-4px;bottom:-4px;width:14px;height:14px;border-radius:999px;background:#ef4444;border:2px solid #0b1021;"></span>`
       : "";
+
+    const emergencyDot = emergency
+      ? `<span style="position:absolute;left:-4px;top:-4px;width:14px;height:14px;border-radius:999px;background:#fb7185;border:2px solid #0b1021;"></span>`
+      : "";
+
+    const size = selected ? 36 : 30;
+    const anchor = selected ? 18 : 15;
+    const border = selected ? "3px solid #67e8f9" : "2px solid rgba(203,213,225,.95)";
 
     return L.divIcon({
       className: "",
-      iconSize: [selected ? 34 : 28, selected ? 34 : 28],
-      iconAnchor: [selected ? 17 : 14, selected ? 17 : 14],
-      popupAnchor: [0, -14],
-      html: `<div style="position:relative;width:${selected ? 34 : 28}px;height:${selected ? 34 : 28}px;border-radius:999px;background:${healthColor};border:${selected ? "3px solid #1d4ed8" : "2px solid rgba(255,255,255,.95)"};box-shadow:0 2px 6px rgba(0,0,0,.4);"></div>${cameraDot}`
+      iconSize: [size, size],
+      iconAnchor: [anchor, anchor],
+      popupAnchor: [0, -12],
+      html: `<div style="position:relative;width:${size}px;height:${size}px;border-radius:999px;background:${color};border:${border};box-shadow:0 2px 9px rgba(0,0,0,.6);"></div>${cameraDot}${emergencyDot}`
     });
   }
 
-  private buildUserPopupHtml(user: ControlRoomMapUser, sessionId: string | null) {
+  private createIncidentIcon(incident: IncidentRecord, selected: boolean) {
+    const bucket = this.incidentBucket(incident);
+    const color =
+      bucket === "EMERGENCY" ? "#ef4444" : bucket === "HIGH" ? "#f97316" : bucket === "MEDIUM" ? "#f59e0b" : "#22c55e";
+    const size = selected ? 30 : 26;
+    return L.divIcon({
+      className: "",
+      iconSize: [size, size],
+      iconAnchor: [Math.round(size / 2), Math.round(size / 2)],
+      popupAnchor: [0, -12],
+      html: `<div style="width:${size}px;height:${size}px;border-radius:999px;background:${color};border:${selected ? "3px solid #67e8f9" : "2px solid #fee2e2"};color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.55);">!</div>`
+    });
+  }
+
+  private buildUserPopupHtml(user: ControlRoomMapUser, status: UnitOperationalStatus, sessionId: string | null) {
     const button = sessionId
-      ? `<button data-session-id="${this.escapeHtml(sessionId)}" style="margin-top:4px;padding:3px 8px;border-radius:6px;border:1px solid #1d4ed8;background:#dbeafe;color:#1e3a8a;cursor:pointer;">Open camera</button>`
+      ? `<button data-session-id="${this.escapeHtml(sessionId)}" style="margin-top:4px;padding:3px 8px;border-radius:6px;border:1px solid #67e8f9;background:#11263f;color:#dbeafe;cursor:pointer;">Open camera</button>`
       : "";
 
     return [
       `<strong>${this.escapeHtml(user.fullName)}</strong>`,
       `Role: ${this.escapeHtml(user.role)}`,
+      `Operational status: ${this.escapeHtml(status)}`,
       `Tracking: ${this.escapeHtml(user.trackingHealthState)}`,
       `Camera live: ${user.hasActiveCamera ? "Yes" : "No"}`,
       `Last GPS: ${this.escapeHtml(user.lastGpsUpdate ? new Date(user.lastGpsUpdate).toLocaleString() : "N/A")}`,
       button
     ].join("<br />");
+  }
+
+  private isStaleOrOffline(row: ControlRoomUserRow | null) {
+    if (!row) {
+      return true;
+    }
+    return row.trackingHealthState === "STALE" || row.trackingHealthState === "OFFLINE";
+  }
+
+  private isSessionEmergency(session: LiveCameraSessionRecord) {
+    return Boolean(session.emergency || this.isUserInEmergency(session.userId));
+  }
+
+  private isUserInEmergency(userId: string) {
+    const status = this.unitStatusForUser(userId);
+    if (status === "EMERGENCY") {
+      return true;
+    }
+    const incident = this.linkedIncidentForUser(userId);
+    return incident ? this.incidentBucket(incident) === "EMERGENCY" : false;
+  }
+
+  private matchesRoleFilter(role: Role) {
+    if (this.roleFilter === "ALL") {
+      return true;
+    }
+    return role === this.roleFilter;
+  }
+
+  private matchesIncidentRoleFilter(incident: IncidentRecord) {
+    if (this.roleFilter === "ALL") {
+      return true;
+    }
+    const role = incident.assignedUserId ? this.userRowById(incident.assignedUserId)?.role ?? null : null;
+    if (!role) {
+      return true;
+    }
+    return role === this.roleFilter;
+  }
+
+  private sessionForUser(userId: string) {
+    return (this.overview()?.cameraSessions ?? []).find((session) => session.userId === userId) ?? null;
+  }
+
+  private userRowById(userId: string) {
+    return (this.overview()?.users ?? []).find((row) => row.userId === userId) ?? null;
+  }
+
+  private incidentBucketRank(bucket: IncidentBucket) {
+    return bucket === "EMERGENCY" ? 0 : bucket === "HIGH" ? 1 : bucket === "MEDIUM" ? 2 : 3;
+  }
+
+  private linkedIncidentForUser(userId: string) {
+    return (
+      this.operationalIncidents().find((incident) => incident.assignedUserId === userId) ??
+      this.incidents().find((incident) => incident.assignedUserId === userId) ??
+      null
+    );
+  }
+
+  private patchIncident(updated: IncidentRecord) {
+    this.incidents.update((rows) => rows.map((row) => (row.id === updated.id ? updated : row)));
+    this.applyLocalViewState();
+  }
+
+  private isEmergencyMetadata(metadata: Record<string, unknown> | null) {
+    if (!metadata || typeof metadata !== "object") {
+      return false;
+    }
+    return Boolean((metadata as Record<string, unknown>)["emergency"]);
+  }
+
+  private loadUnitStatusOverrides() {
+    try {
+      const raw = localStorage.getItem(UNIT_STATUS_STORAGE_KEY);
+      if (!raw) {
+        return;
+      }
+      const parsed = JSON.parse(raw) as Record<string, UnitOperationalStatus>;
+      this.unitStatusOverrides.set(parsed);
+    } catch {
+      this.unitStatusOverrides.set({});
+    }
+  }
+
+  private persistUnitStatusOverrides() {
+    try {
+      localStorage.setItem(UNIT_STATUS_STORAGE_KEY, JSON.stringify(this.unitStatusOverrides()));
+    } catch {
+      // Ignore storage write failures.
+    }
   }
 
   private escapeHtml(value: string) {
@@ -1116,11 +1398,6 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;")
       .replaceAll("'", "&#39;");
-  }
-
-  isOperator() {
-    const role = this.auth.currentUser()?.role as Role | undefined;
-    return role === "ADMIN" || role === "CASE_WORKER" || role === "POLICE";
   }
 }
 
