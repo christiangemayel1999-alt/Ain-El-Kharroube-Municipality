@@ -7,6 +7,7 @@ import { requireRoles } from "../middleware/rbac";
 import { validateBody } from "../middleware/validate";
 import { writeAudit } from "../services/audit";
 import { writeLiveCameraEvent } from "../services/liveCameraAudit";
+import { invalidateLiveCameraSessionSignaling } from "../services/liveCameraSignaling";
 import { writeTrackingEvent } from "../services/trackingAudit";
 import { asyncHandler } from "../utils/asyncHandler";
 
@@ -244,6 +245,12 @@ usersRouter.patch(
             stoppedAt: now.toISOString()
           }
         });
+
+        invalidateLiveCameraSessionSignaling({
+          sessionId: session.id,
+          targetUserId: userId,
+          reason: disableCameraSender ? "CAMERA_SENDER_DISABLED" : "HIDDEN_FROM_CONTROL_ROOM"
+        });
       }
     }
 
@@ -367,6 +374,12 @@ usersRouter.post(
           stoppedReason: "TRUSTED_DEVICE_RESET",
           stoppedAt: now.toISOString()
         }
+      });
+
+      invalidateLiveCameraSessionSignaling({
+        sessionId: session.id,
+        targetUserId: userId,
+        reason: "TRUSTED_DEVICE_RESET"
       });
     }
 

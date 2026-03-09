@@ -1,16 +1,40 @@
-﻿import { Injectable, signal } from "@angular/core";
+import { Injectable, signal } from "@angular/core";
 import { firstValueFrom } from "rxjs";
 import { environment } from "../../environments/environment";
+import { MediaStreamBindingState } from "../directives/media-stream.directive";
 import { LiveCameraIceConfig, LiveCameraSessionRecord, LiveCameraSessionStatus } from "../models";
 import { ApiService } from "./api.service";
 import { AuthService } from "./auth.service";
 
 type WsMode = "SENDER" | "VIEWER";
 type SenderPeerKey = `${string}:${string}`;
+type ViewerDiagnosticsScope = "tile" | "main";
 
 type SignalMessage = {
   type: string;
   [key: string]: unknown;
+};
+
+type ViewerPeerDiagnostics = {
+  sessionId: string;
+  socketConnected: boolean;
+  connectionState: RTCPeerConnectionState | "unknown";
+  iceConnectionState: RTCIceConnectionState | "unknown";
+  signalingState: RTCSignalingState | "unknown";
+  remoteStreamCreated: boolean;
+  remoteVideoTrackPresent: boolean;
+  srcObjectBound: boolean;
+  playError: string | null;
+  bytesReceived: number | null;
+  selectedIceCandidateType: string | null;
+  lastRebindCause: string | null;
+  lastUpdatedAt: string;
+};
+
+type SenderSocketWaiter = {
+  resolve: () => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
 };
 
 @Injectable({ providedIn: "root" })
@@ -19,7 +43,9 @@ export class LiveCameraService {
   private readonly viewerPeerConnections = new Map<string, RTCPeerConnection>();
   private readonly viewerTrackWaitTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly viewerReconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly viewerStatsPollTimers = new Map<string, ReturnType<typeof setInterval>>();
   private readonly viewerSessionsById = new Map<string, LiveCameraSessionRecord>();
+  private readonly senderRegisterWaiters = new Map<string, SenderSocketWaiter>();
   private rtcConfigurationPromise: Promise<RTCConfiguration> | null = null;
 
   private senderSocket: WebSocket | null = null;
@@ -30,7 +56,25 @@ export class LiveCameraService {
   private senderOpenResolver: (() => void) | null = null;
   private viewerOpenResolver: (() => void) | null = null;
 
+  private senderHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private viewerHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private senderHeartbeatLastPongAt = 0;
+  private viewerHeartbeatLastPongAt = 0;
+  private senderHeartbeatPingCounter = 0;
+  private viewerHeartbeatPingCounter = 0;
+
+  private senderReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private viewerSocketReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private senderReconnectAttempts = 0;
+  private viewerSocketReconnectAttempts = 0;
+
+  private explicitSenderSocketClose = false;
+  private explicitViewerSocketClose = false;
+
   private facingMode: "user" | "environment" = "environment";
+  private readonly socketConnectTimeoutMs = 12_000;
+  private readonly heartbeatIntervalMs = 10_000;
+  private readonly heartbeatTimeoutMs = 35_000;
 
   readonly senderSession = signal<LiveCameraSessionRecord | null>(null);
   readonly senderLocalStream = signal<MediaStream | null>(null);
@@ -39,11 +83,13 @@ export class LiveCameraService {
   readonly senderMessage = signal<string | null>(null);
   readonly senderStatus = signal<LiveCameraSessionStatus | "IDLE">("IDLE");
   readonly microphoneEnabled = signal(true);
+  readonly senderSocketConnected = signal(false);
 
   readonly viewerStreams = signal<Record<string, MediaStream | null>>({});
   readonly viewerSessionState = signal<Record<string, LiveCameraSessionStatus>>({});
   readonly viewerErrors = signal<Record<string, string>>({});
   readonly viewerConnected = signal(false);
+  readonly viewerDiagnostics = signal<Record<string, ViewerPeerDiagnostics>>({});
 
   constructor(
     private readonly api: ApiService,
@@ -59,12 +105,14 @@ export class LiveCameraService {
     this.senderError.set(null);
     this.senderMessage.set(null);
 
+    let session: LiveCameraSessionRecord | null = null;
+
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
         throw new Error("Camera API is unavailable in this browser.");
       }
 
-      const session = await firstValueFrom(
+      session = await firstValueFrom(
         this.api.startLiveCameraSession({
           microphoneEnabled: options?.audio !== false,
           emergency: options?.emergency ?? false
@@ -73,6 +121,10 @@ export class LiveCameraService {
 
       this.senderSession.set(session);
       this.senderStatus.set("CONNECTING");
+      this.diag("sender.start", "session-started", {
+        sessionId: session.id,
+        status: session.sessionStatus
+      });
 
       let media: MediaStream;
       try {
@@ -88,18 +140,9 @@ export class LiveCameraService {
         const message = this.mapMediaError(error);
         const denied = this.isPermissionDenied(error);
 
-        const updated = await firstValueFrom(
-          this.api.updateLiveCameraSessionState(
-            session.id,
-            denied ? "PERMISSION_DENIED" : "FAILED",
-            {
-              error: message
-            }
-          )
-        );
-
-        this.senderSession.set(updated);
-        this.senderStatus.set(updated.sessionStatus);
+        const failedStatus: Exclude<LiveCameraSessionStatus, "OFFLINE" | "CONNECTING" | "LIVE" | "NETWORK_WEAK"> =
+          denied ? "PERMISSION_DENIED" : "FAILED";
+        await this.reconcileFailedStartup(session, failedStatus, message);
         this.senderError.set(message);
         this.senderLoading.set(false);
         return;
@@ -109,26 +152,38 @@ export class LiveCameraService {
       this.microphoneEnabled.set(this.streamMicEnabled(media));
 
       await this.ensureSenderSocket();
-      this.sendToSenderSocket({
-        type: "REGISTER_SENDER",
-        sessionId: session.id
-      });
+      await this.registerSenderSession(session.id);
 
       const updated = await firstValueFrom(
         this.api.updateLiveCameraSessionState(session.id, "LIVE", {
           microphoneEnabled: this.microphoneEnabled(),
-          emergency: options?.emergency ?? false
+          emergency: options?.emergency ?? false,
+          senderReadyAt: new Date().toISOString()
         })
       );
+
+      this.sendToSenderSocket({
+        type: "SESSION_STATE",
+        sessionId: session.id,
+        targetUserId: session.userId,
+        sessionStatus: "LIVE",
+        isActive: true
+      });
 
       this.senderSession.set(updated);
       this.senderStatus.set(updated.sessionStatus);
       this.senderMessage.set("Live camera broadcast started.");
+      this.senderReconnectAttempts = 0;
     } catch (error) {
-      this.senderError.set(this.extractApiMessage(error, "Could not start live camera broadcast."));
-      this.stopLocalSenderMedia();
-      this.senderSession.set(null);
-      this.senderStatus.set("IDLE");
+      const message = this.extractApiMessage(error, "Could not start live camera broadcast.");
+      this.senderError.set(message);
+      if (session) {
+        await this.reconcileFailedStartup(session, "FAILED", message);
+      } else {
+        this.stopLocalSenderMedia();
+        this.senderSession.set(null);
+        this.senderStatus.set("IDLE");
+      }
     } finally {
       this.senderLoading.set(false);
     }
@@ -143,21 +198,12 @@ export class LiveCameraService {
       if (currentSession) {
         await firstValueFrom(this.api.stopLiveCameraSession(currentSession.id, reason));
       }
-
-      if (currentSession) {
-        this.sendToSenderSocket({
-          type: "SESSION_STATE",
-          sessionId: currentSession.id,
-          targetUserId: currentSession.userId,
-          sessionStatus: "ENDED",
-          isActive: false
-        });
-      }
     } catch (error) {
       this.senderError.set(this.extractApiMessage(error, "Could not stop live camera broadcast."));
     } finally {
+      this.clearSenderReconnectTimer();
       this.closeAllSenderPeers();
-      this.closeSenderSocket();
+      this.closeSenderSocket(true);
       this.stopLocalSenderMedia();
       this.senderSession.set(null);
       this.senderStatus.set("IDLE");
@@ -237,10 +283,12 @@ export class LiveCameraService {
   }
 
   async connectViewerSignaling() {
+    this.explicitViewerSocketClose = false;
     await this.ensureViewerSocket();
   }
 
   disconnectViewerSignaling() {
+    this.explicitViewerSocketClose = true;
     for (const peer of this.viewerPeerConnections.values()) {
       peer.close();
     }
@@ -253,7 +301,11 @@ export class LiveCameraService {
     this.viewerStreams.set({});
     this.viewerSessionState.set({});
     this.viewerErrors.set({});
-    this.closeViewerSocket();
+    this.viewerDiagnostics.set({});
+    this.clearAllViewerTrackWaitTimers();
+    this.clearAllViewerStatsPolling();
+    this.clearViewerSocketReconnectTimer();
+    this.closeViewerSocket(true);
   }
 
   prepareForLogout() {
@@ -261,7 +313,7 @@ export class LiveCameraService {
     if (this.senderStatus() !== "IDLE") {
       void this.stopBroadcast("LOGOUT");
     } else {
-      this.closeSenderSocket();
+      this.closeSenderSocket(true);
       this.stopLocalSenderMedia();
       this.senderSession.set(null);
       this.senderStatus.set("IDLE");
@@ -279,10 +331,20 @@ export class LiveCameraService {
       }
       this.viewerStreams.set({});
       this.viewerSessionState.set({});
+      this.viewerDiagnostics.set({});
       return;
     }
 
-    await this.ensureViewerSocket();
+    try {
+      await this.ensureViewerSocket();
+    } catch {
+      this.viewerErrors.update((rows) => ({
+        ...rows,
+        _global: "Viewer signaling disconnected. Reconnecting..."
+      }));
+      this.scheduleViewerSocketReconnect();
+      return;
+    }
 
     const nextSessionIds = new Set(sessions.map((session) => session.id));
     for (const existingId of this.viewerPeerConnections.keys()) {
@@ -293,6 +355,7 @@ export class LiveCameraService {
 
     for (const session of sessions) {
       this.viewerSessionsById.set(session.id, session);
+      this.ensureViewerDiagnostics(session.id);
       const currentState = this.viewerSessionState()[session.id];
       if (currentState !== session.sessionStatus) {
         this.viewerSessionState.update((state) => ({
@@ -307,12 +370,31 @@ export class LiveCameraService {
       }
 
       if (!this.viewerPeerConnections.has(session.id)) {
-        await this.openViewerPeer(session);
+        try {
+          await this.openViewerPeer(session);
+        } catch {
+          this.viewerErrors.update((rows) => ({
+            ...rows,
+            [session.id]: "Failed to open viewer peer. Reconnecting..."
+          }));
+          this.scheduleViewerReconnect(session.id, 1_800);
+        }
       }
     }
   }
 
   focusSessionOnViewer(session: LiveCameraSessionRecord, cause: "SELECT" | "SWITCH") {
+    this.diag("viewer.select", "focus-session", {
+      sessionId: session.id,
+      userId: session.userId,
+      cause,
+      streamPresent: Boolean(this.viewerStreams()[session.id])
+    });
+
+    this.updateViewerDiagnostics(session.id, {
+      lastRebindCause: cause
+    });
+
     const eventType = cause === "SELECT" ? "STREAM_SELECTED_IN_CONTROL_ROOM" : "VIEWER_SWITCHED_STREAM";
     firstValueFrom(
       this.api.logLiveCameraViewerEvent({
@@ -328,12 +410,50 @@ export class LiveCameraService {
     });
   }
 
+  reportMediaStreamBindingState(state: MediaStreamBindingState, scope: ViewerDiagnosticsScope) {
+    const sessionId = state.sessionId;
+    if (!sessionId) {
+      return;
+    }
+
+    this.updateViewerDiagnostics(sessionId, {
+      srcObjectBound: state.srcObjectBound,
+      remoteVideoTrackPresent: state.remoteVideoTrackPresent,
+      playError: state.playSucceeded ? null : state.playError,
+      lastRebindCause: scope.toUpperCase()
+    });
+
+    this.diag("viewer.media", "video-element-state", {
+      sessionId,
+      scope,
+      srcObjectBound: state.srcObjectBound,
+      playSucceeded: state.playSucceeded,
+      playError: state.playError
+    });
+  }
+
   private async openViewerPeer(session: LiveCameraSessionRecord) {
     const config = await this.getRtcConfiguration();
     const viewerPeerId = session.id;
     const peer = new RTCPeerConnection(config);
     this.viewerPeerConnections.set(session.id, peer);
     this.clearViewerTrackWaitTimer(session.id);
+    this.startViewerStatsPolling(session.id, peer);
+
+    this.updateViewerDiagnostics(session.id, {
+      socketConnected: this.viewerConnected(),
+      connectionState: peer.connectionState,
+      iceConnectionState: peer.iceConnectionState,
+      signalingState: peer.signalingState,
+      remoteStreamCreated: false,
+      remoteVideoTrackPresent: false,
+      playError: null
+    });
+
+    this.diag("viewer.peer", "peer-created", {
+      sessionId: session.id,
+      userId: session.userId
+    });
 
     let receivedMedia = false;
     this.viewerTrackWaitTimers.set(
@@ -348,6 +468,11 @@ export class LiveCameraService {
           [session.id]:
             "No media received yet. If you are on hosted Wi-Fi/NAT, configure TURN relay in backend ICE settings."
         }));
+
+        this.updateViewerDiagnostics(session.id, {
+          remoteStreamCreated: false,
+          remoteVideoTrackPresent: false
+        });
       }, 15_000)
     );
 
@@ -355,10 +480,9 @@ export class LiveCameraService {
     peer.addTransceiver("audio", { direction: "recvonly" });
 
     peer.ontrack = (event) => {
-      const stream = event.streams[0];
-      if (!stream) {
-        return;
-      }
+      const fallbackStream = new MediaStream([event.track]);
+      const stream = event.streams[0] ?? fallbackStream;
+      const hasVideoTrack = stream.getVideoTracks().length > 0 || event.track.kind === "video";
       receivedMedia = true;
       this.clearViewerTrackWaitTimer(session.id);
 
@@ -370,6 +494,18 @@ export class LiveCameraService {
         ...rows,
         [session.id]: ""
       }));
+
+      this.updateViewerDiagnostics(session.id, {
+        remoteStreamCreated: true,
+        remoteVideoTrackPresent: hasVideoTrack
+      });
+
+      this.diag("viewer.peer", "remote-stream-created", {
+        sessionId: session.id,
+        hasVideoTrack,
+        trackKind: event.track.kind,
+        streamId: stream.id
+      });
     };
 
     peer.onicecandidate = (event) => {
@@ -389,6 +525,15 @@ export class LiveCameraService {
     };
 
     peer.oniceconnectionstatechange = () => {
+      this.updateViewerDiagnostics(session.id, {
+        iceConnectionState: peer.iceConnectionState
+      });
+
+      this.diag("viewer.peer", "ice-connection-state", {
+        sessionId: session.id,
+        state: peer.iceConnectionState
+      });
+
       if (peer.iceConnectionState === "failed" || peer.iceConnectionState === "disconnected") {
         this.viewerErrors.update((rows) => ({
           ...rows,
@@ -407,7 +552,27 @@ export class LiveCameraService {
       }
     };
 
+    peer.onsignalingstatechange = () => {
+      this.updateViewerDiagnostics(session.id, {
+        signalingState: peer.signalingState
+      });
+
+      this.diag("viewer.peer", "signaling-state", {
+        sessionId: session.id,
+        state: peer.signalingState
+      });
+    };
+
     peer.onconnectionstatechange = () => {
+      this.updateViewerDiagnostics(session.id, {
+        connectionState: peer.connectionState
+      });
+
+      this.diag("viewer.peer", "connection-state", {
+        sessionId: session.id,
+        state: peer.connectionState
+      });
+
       if (peer.connectionState === "failed" || peer.connectionState === "disconnected") {
         this.viewerErrors.update((rows) => ({
           ...rows,
@@ -450,11 +615,13 @@ export class LiveCameraService {
       peer.onicecandidate = null;
       peer.oniceconnectionstatechange = null;
       peer.onconnectionstatechange = null;
+      peer.onsignalingstatechange = null;
       peer.close();
       this.viewerPeerConnections.delete(sessionId);
     }
     this.clearViewerTrackWaitTimer(sessionId);
     this.clearViewerReconnectTimer(sessionId);
+    this.stopViewerStatsPolling(sessionId);
 
     this.viewerStreams.update((rows) => {
       const next = { ...rows };
@@ -469,6 +636,12 @@ export class LiveCameraService {
     });
 
     this.viewerErrors.update((rows) => {
+      const next = { ...rows };
+      delete next[sessionId];
+      return next;
+    });
+
+    this.viewerDiagnostics.update((rows) => {
       const next = { ...rows };
       delete next[sessionId];
       return next;
@@ -502,6 +675,7 @@ export class LiveCameraService {
             ...rows,
             [sessionId]: "Reconnect failed. Check TURN relay settings and sender network."
           }));
+          this.scheduleViewerSocketReconnect();
         });
     }, delayMs);
 
@@ -521,12 +695,13 @@ export class LiveCameraService {
       return;
     }
 
-    this.closeSenderSocket();
+    this.closeSenderSocket(true);
     const wsUrl = this.buildWsUrl("SENDER");
     if (!wsUrl) {
       throw new Error("Not authenticated.");
     }
 
+    this.explicitSenderSocketClose = false;
     const socket = new WebSocket(wsUrl);
     this.senderSocket = socket;
 
@@ -534,11 +709,15 @@ export class LiveCameraService {
       this.senderOpenResolver = resolve;
       const timeout = setTimeout(() => {
         reject(new Error("Could not connect to signaling server."));
-      }, 12_000);
+      }, this.socketConnectTimeoutMs);
 
       socket.onopen = () => {
         clearTimeout(timeout);
         this.senderSocketReady = true;
+        this.senderSocketConnected.set(true);
+        this.senderHeartbeatLastPongAt = Date.now();
+        this.startSenderHeartbeat();
+        this.diag("sender.socket", "open", {});
         this.senderOpenResolver?.();
         this.senderOpenResolver = null;
       };
@@ -553,14 +732,32 @@ export class LiveCameraService {
       this.handleSenderSignal(event.data);
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event) => {
+      const wasExplicit = this.explicitSenderSocketClose;
       this.senderSocketReady = false;
+      this.senderSocketConnected.set(false);
       this.senderSocket = null;
+      this.stopSenderHeartbeat();
       this.closeAllSenderPeers();
+      this.rejectAllSenderWaiters("Sender signaling socket closed before registration completed.");
+
+      this.diag("sender.socket", "close", {
+        code: event.code,
+        reason: event.reason,
+        explicit: wasExplicit
+      });
+
+      if (!wasExplicit && this.senderStatus() !== "IDLE" && this.senderSession()) {
+        this.senderStatus.set("CONNECTING");
+        this.senderError.set("Sender signaling disconnected. Reconnecting...");
+        this.scheduleSenderReconnect();
+      }
     };
   }
 
-  private closeSenderSocket() {
+  private closeSenderSocket(explicit = false) {
+    this.explicitSenderSocketClose = explicit;
+
     if (this.senderSocket) {
       try {
         this.senderSocket.close();
@@ -570,7 +767,10 @@ export class LiveCameraService {
     }
     this.senderSocket = null;
     this.senderSocketReady = false;
+    this.senderSocketConnected.set(false);
     this.senderOpenResolver = null;
+    this.stopSenderHeartbeat();
+    this.rejectAllSenderWaiters("Sender signaling socket was closed.");
   }
 
   private async ensureViewerSocket() {
@@ -578,12 +778,13 @@ export class LiveCameraService {
       return;
     }
 
-    this.closeViewerSocket();
+    this.closeViewerSocket(true);
     const wsUrl = this.buildWsUrl("VIEWER");
     if (!wsUrl) {
       throw new Error("Not authenticated.");
     }
 
+    this.explicitViewerSocketClose = false;
     const socket = new WebSocket(wsUrl);
     this.viewerSocket = socket;
 
@@ -591,12 +792,29 @@ export class LiveCameraService {
       this.viewerOpenResolver = resolve;
       const timeout = setTimeout(() => {
         reject(new Error("Could not connect to viewer signaling."));
-      }, 12_000);
+      }, this.socketConnectTimeoutMs);
 
       socket.onopen = () => {
         clearTimeout(timeout);
         this.viewerSocketReady = true;
         this.viewerConnected.set(true);
+        this.viewerHeartbeatLastPongAt = Date.now();
+        this.startViewerHeartbeat();
+        this.viewerSocketReconnectAttempts = 0;
+        this.diag("viewer.socket", "open", {});
+
+        this.viewerDiagnostics.update((rows) => {
+          const next = { ...rows };
+          for (const [sessionId, diagnostic] of Object.entries(next)) {
+            next[sessionId] = {
+              ...diagnostic,
+              socketConnected: true,
+              lastUpdatedAt: new Date().toISOString()
+            };
+          }
+          return next;
+        });
+
         this.viewerOpenResolver?.();
         this.viewerOpenResolver = null;
       };
@@ -611,17 +829,47 @@ export class LiveCameraService {
       this.handleViewerSignal(event.data);
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event) => {
+      const wasExplicit = this.explicitViewerSocketClose;
       this.viewerSocketReady = false;
       this.viewerConnected.set(false);
       this.viewerSocket = null;
+      this.stopViewerHeartbeat();
+
+      this.diag("viewer.socket", "close", {
+        code: event.code,
+        reason: event.reason,
+        explicit: wasExplicit
+      });
+
+      this.viewerDiagnostics.update((rows) => {
+        const next = { ...rows };
+        for (const [sessionId, diagnostic] of Object.entries(next)) {
+          next[sessionId] = {
+            ...diagnostic,
+            socketConnected: false,
+            lastUpdatedAt: new Date().toISOString()
+          };
+        }
+        return next;
+      });
+
       for (const sessionId of this.viewerPeerConnections.keys()) {
         this.removeViewerPeer(sessionId);
+      }
+
+      if (!wasExplicit && this.viewerSessionsById.size) {
+        this.viewerErrors.update((rows) => ({
+          ...rows,
+          _global: "Viewer signaling disconnected. Reconnecting..."
+        }));
+        this.scheduleViewerSocketReconnect();
       }
     };
   }
 
-  private closeViewerSocket() {
+  private closeViewerSocket(explicit = false) {
+    this.explicitViewerSocketClose = explicit;
     if (this.viewerSocket) {
       try {
         this.viewerSocket.close();
@@ -633,6 +881,7 @@ export class LiveCameraService {
     this.viewerSocketReady = false;
     this.viewerConnected.set(false);
     this.viewerOpenResolver = null;
+    this.stopViewerHeartbeat();
   }
 
   private sendToSenderSocket(payload: SignalMessage) {
@@ -652,6 +901,25 @@ export class LiveCameraService {
   private handleSenderSignal(raw: unknown) {
     const message = this.parseSignal(raw);
     if (!message) {
+      return;
+    }
+
+    if (message["type"] === "PONG") {
+      this.senderHeartbeatLastPongAt = Date.now();
+      this.diag("sender.socket", "pong", {
+        pingId: String(message["pingId"] ?? "")
+      });
+      return;
+    }
+
+    if (message["type"] === "SENDER_REGISTERED") {
+      const sessionId = String(message["sessionId"] ?? "");
+      if (sessionId) {
+        this.resolveSenderRegisterWaiter(sessionId);
+      }
+      this.diag("sender.socket", "registered", {
+        sessionId
+      });
       return;
     }
 
@@ -679,8 +947,32 @@ export class LiveCameraService {
       return;
     }
 
+    if (message["type"] === "SESSION_ENDED") {
+      const sessionId = String(message["sessionId"] ?? "");
+      const activeSession = this.senderSession();
+      if (activeSession?.id && sessionId === activeSession.id) {
+        this.diag("sender.socket", "session-ended", {
+          sessionId,
+          reason: String(message["reason"] ?? "")
+        });
+        void this.stopBroadcast("SESSION_ENDED_BY_SERVER");
+      }
+      return;
+    }
+
     if (message["type"] === "ERROR") {
-      this.senderError.set(String(message["message"] ?? "Camera signaling error."));
+      const text = String(message["message"] ?? "Camera signaling error.");
+      this.senderError.set(text);
+
+      const currentSessionId = this.senderSession()?.id;
+      if (currentSessionId) {
+        this.rejectSenderRegisterWaiter(currentSessionId, text);
+      }
+
+      this.diag("sender.socket", "error", {
+        message: text,
+        code: String(message["code"] ?? "")
+      });
     }
   }
 
@@ -729,7 +1021,32 @@ export class LiveCameraService {
       });
     };
 
+    peer.oniceconnectionstatechange = () => {
+      this.diag("sender.peer", "ice-connection-state", {
+        sessionId,
+        viewerUserId,
+        viewerPeerId,
+        state: peer.iceConnectionState
+      });
+    };
+
+    peer.onsignalingstatechange = () => {
+      this.diag("sender.peer", "signaling-state", {
+        sessionId,
+        viewerUserId,
+        viewerPeerId,
+        state: peer.signalingState
+      });
+    };
+
     peer.onconnectionstatechange = () => {
+      this.diag("sender.peer", "connection-state", {
+        sessionId,
+        viewerUserId,
+        viewerPeerId,
+        state: peer.connectionState
+      });
+
       if (peer.connectionState === "failed" || peer.connectionState === "disconnected") {
         this.closeSenderPeer(key);
       }
@@ -756,6 +1073,8 @@ export class LiveCameraService {
     }
 
     peer.onicecandidate = null;
+    peer.oniceconnectionstatechange = null;
+    peer.onsignalingstatechange = null;
     peer.onconnectionstatechange = null;
     peer.close();
     this.senderPeerConnections.delete(key);
@@ -770,6 +1089,14 @@ export class LiveCameraService {
   private handleViewerSignal(raw: unknown) {
     const message = this.parseSignal(raw);
     if (!message) {
+      return;
+    }
+
+    if (message["type"] === "PONG") {
+      this.viewerHeartbeatLastPongAt = Date.now();
+      this.diag("viewer.socket", "pong", {
+        pingId: String(message["pingId"] ?? "")
+      });
       return;
     }
 
@@ -833,6 +1160,10 @@ export class LiveCameraService {
       if (!sessionId) {
         return;
       }
+      this.diag("viewer.socket", "session-ended", {
+        sessionId,
+        reason: String(message["reason"] ?? "")
+      });
       this.viewerSessionsById.delete(sessionId);
       this.clearViewerReconnectTimer(sessionId);
       this.removeViewerPeer(sessionId);
@@ -845,6 +1176,11 @@ export class LiveCameraService {
         ...rows,
         _global: text
       }));
+
+      this.diag("viewer.socket", "error", {
+        message: text,
+        code: String(message["code"] ?? "")
+      });
     }
   }
 
@@ -917,6 +1253,13 @@ export class LiveCameraService {
     }
   }
 
+  private clearAllViewerTrackWaitTimers() {
+    for (const timer of this.viewerTrackWaitTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.viewerTrackWaitTimers.clear();
+  }
+
   private buildWsUrl(mode: WsMode) {
     const token = this.auth.getToken();
     if (!token) {
@@ -930,6 +1273,449 @@ export class LiveCameraService {
     parsed.searchParams.set("token", token);
     parsed.searchParams.set("mode", mode);
     return parsed.toString();
+  }
+
+  private async reconcileFailedStartup(
+    session: LiveCameraSessionRecord,
+    status: Exclude<LiveCameraSessionStatus, "OFFLINE" | "CONNECTING" | "LIVE" | "NETWORK_WEAK">,
+    errorMessage: string
+  ) {
+    try {
+      await firstValueFrom(
+        this.api.updateLiveCameraSessionState(session.id, status, {
+          error: errorMessage,
+          failedAt: new Date().toISOString()
+        })
+      );
+    } catch {
+      // Fallback stop below keeps DB/session state reconciled.
+    }
+
+    try {
+      await firstValueFrom(this.api.stopLiveCameraSession(session.id, "STARTUP_FAILED"));
+    } catch {
+      // If stop fails, sender cleanup still proceeds locally.
+    }
+
+    this.clearSenderReconnectTimer();
+    this.closeAllSenderPeers();
+    this.closeSenderSocket(true);
+    this.stopLocalSenderMedia();
+    this.senderSession.set(null);
+    this.senderStatus.set("IDLE");
+  }
+
+  private async registerSenderSession(sessionId: string) {
+    this.sendToSenderSocket({
+      type: "REGISTER_SENDER",
+      sessionId
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.senderRegisterWaiters.delete(sessionId);
+        reject(new Error("Sender registration timed out."));
+      }, 8_000);
+
+      this.senderRegisterWaiters.set(sessionId, {
+        resolve: () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+        timer
+      });
+    });
+  }
+
+  private resolveSenderRegisterWaiter(sessionId: string) {
+    const waiter = this.senderRegisterWaiters.get(sessionId);
+    if (!waiter) {
+      return;
+    }
+
+    this.senderRegisterWaiters.delete(sessionId);
+    waiter.resolve();
+  }
+
+  private rejectSenderRegisterWaiter(sessionId: string, message: string) {
+    const waiter = this.senderRegisterWaiters.get(sessionId);
+    if (!waiter) {
+      return;
+    }
+
+    this.senderRegisterWaiters.delete(sessionId);
+    waiter.reject(new Error(message));
+  }
+
+  private rejectAllSenderWaiters(message: string) {
+    for (const [sessionId, waiter] of this.senderRegisterWaiters.entries()) {
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error(message));
+      this.senderRegisterWaiters.delete(sessionId);
+    }
+  }
+
+  private scheduleSenderReconnect() {
+    if (this.senderReconnectTimer) {
+      return;
+    }
+
+    const session = this.senderSession();
+    if (!session || !this.senderLocalStream()) {
+      return;
+    }
+
+    this.senderReconnectAttempts += 1;
+    const delayMs = Math.min(1_000 * Math.pow(2, this.senderReconnectAttempts - 1), 10_000);
+
+    this.senderReconnectTimer = setTimeout(() => {
+      this.senderReconnectTimer = null;
+
+      const currentSession = this.senderSession();
+      if (!currentSession || currentSession.id !== session.id || this.senderStatus() === "IDLE") {
+        return;
+      }
+
+      void this.ensureSenderSocket()
+        .then(() => this.registerSenderSession(session.id))
+        .then(() => {
+          this.senderReconnectAttempts = 0;
+          this.senderError.set(null);
+          this.senderStatus.set("LIVE");
+
+          this.sendToSenderSocket({
+            type: "SESSION_STATE",
+            sessionId: session.id,
+            targetUserId: session.userId,
+            sessionStatus: "LIVE",
+            isActive: true
+          });
+
+          this.diag("sender.socket", "reconnected", {
+            sessionId: session.id
+          });
+        })
+        .catch(() => {
+          if (this.senderReconnectAttempts >= 5) {
+            this.senderError.set("Signaling reconnect failed. Please restart camera broadcast.");
+            void this.reconcileLostSessionAfterReconnectFailure(session);
+            return;
+          }
+          this.scheduleSenderReconnect();
+        });
+    }, delayMs);
+  }
+
+  private clearSenderReconnectTimer() {
+    if (this.senderReconnectTimer) {
+      clearTimeout(this.senderReconnectTimer);
+      this.senderReconnectTimer = null;
+    }
+    this.senderReconnectAttempts = 0;
+  }
+
+  private async reconcileLostSessionAfterReconnectFailure(session: LiveCameraSessionRecord) {
+    try {
+      await firstValueFrom(
+        this.api.updateLiveCameraSessionState(session.id, "FAILED", {
+          error: "SIGNALING_RECONNECT_FAILED",
+          failedAt: new Date().toISOString()
+        })
+      );
+    } catch {
+      // Best effort.
+    }
+
+    try {
+      await firstValueFrom(this.api.stopLiveCameraSession(session.id, "SIGNALING_RECONNECT_FAILED"));
+    } catch {
+      // Best effort.
+    }
+
+    this.clearSenderReconnectTimer();
+    this.closeAllSenderPeers();
+    this.closeSenderSocket(true);
+    this.stopLocalSenderMedia();
+    this.senderSession.set(null);
+    this.senderStatus.set("IDLE");
+  }
+
+  private scheduleViewerSocketReconnect() {
+    if (this.viewerSocketReconnectTimer || this.explicitViewerSocketClose) {
+      return;
+    }
+
+    this.viewerSocketReconnectAttempts += 1;
+    const delayMs = Math.min(1_000 * Math.pow(2, this.viewerSocketReconnectAttempts - 1), 8_000);
+
+    this.viewerSocketReconnectTimer = setTimeout(() => {
+      this.viewerSocketReconnectTimer = null;
+
+      if (this.explicitViewerSocketClose || !this.viewerSessionsById.size) {
+        return;
+      }
+
+      void this.ensureViewerSocket()
+        .then(async () => {
+          for (const session of this.viewerSessionsById.values()) {
+            if (
+              !session.isActive ||
+              session.sessionStatus === "OFFLINE" ||
+              TERMINAL_STATES.has(session.sessionStatus) ||
+              this.viewerPeerConnections.has(session.id)
+            ) {
+              continue;
+            }
+            await this.openViewerPeer(session);
+          }
+          this.viewerErrors.update((rows) => ({
+            ...rows,
+            _global: ""
+          }));
+        })
+        .catch(() => {
+          this.scheduleViewerSocketReconnect();
+        });
+    }, delayMs);
+  }
+
+  private clearViewerSocketReconnectTimer() {
+    if (this.viewerSocketReconnectTimer) {
+      clearTimeout(this.viewerSocketReconnectTimer);
+      this.viewerSocketReconnectTimer = null;
+    }
+    this.viewerSocketReconnectAttempts = 0;
+  }
+
+  private startSenderHeartbeat() {
+    this.stopSenderHeartbeat();
+
+    this.senderHeartbeatTimer = setInterval(() => {
+      const socket = this.senderSocket;
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        return;
+      }
+
+      const now = Date.now();
+      if (now - this.senderHeartbeatLastPongAt > this.heartbeatTimeoutMs) {
+        this.diag("sender.socket", "heartbeat-timeout", {
+          ageMs: now - this.senderHeartbeatLastPongAt
+        });
+        this.closeSenderSocket(false);
+        return;
+      }
+
+      this.senderHeartbeatPingCounter += 1;
+      this.sendToSenderSocket({
+        type: "PING",
+        pingId: `sender-${this.senderHeartbeatPingCounter}`,
+        clientAt: new Date().toISOString()
+      });
+    }, this.heartbeatIntervalMs);
+  }
+
+  private stopSenderHeartbeat() {
+    if (this.senderHeartbeatTimer) {
+      clearInterval(this.senderHeartbeatTimer);
+      this.senderHeartbeatTimer = null;
+    }
+  }
+
+  private startViewerHeartbeat() {
+    this.stopViewerHeartbeat();
+
+    this.viewerHeartbeatTimer = setInterval(() => {
+      const socket = this.viewerSocket;
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        return;
+      }
+
+      const now = Date.now();
+      if (now - this.viewerHeartbeatLastPongAt > this.heartbeatTimeoutMs) {
+        this.diag("viewer.socket", "heartbeat-timeout", {
+          ageMs: now - this.viewerHeartbeatLastPongAt
+        });
+        this.closeViewerSocket(false);
+        this.scheduleViewerSocketReconnect();
+        return;
+      }
+
+      this.viewerHeartbeatPingCounter += 1;
+      this.sendToViewerSocket({
+        type: "PING",
+        pingId: `viewer-${this.viewerHeartbeatPingCounter}`,
+        clientAt: new Date().toISOString()
+      });
+    }, this.heartbeatIntervalMs);
+  }
+
+  private stopViewerHeartbeat() {
+    if (this.viewerHeartbeatTimer) {
+      clearInterval(this.viewerHeartbeatTimer);
+      this.viewerHeartbeatTimer = null;
+    }
+  }
+
+  private ensureViewerDiagnostics(sessionId: string) {
+    if (this.viewerDiagnostics()[sessionId]) {
+      return;
+    }
+
+    this.viewerDiagnostics.update((rows) => ({
+      ...rows,
+      [sessionId]: this.createViewerDiagnostics(sessionId)
+    }));
+  }
+
+  private createViewerDiagnostics(sessionId: string): ViewerPeerDiagnostics {
+    return {
+      sessionId,
+      socketConnected: this.viewerConnected(),
+      connectionState: "new",
+      iceConnectionState: "new",
+      signalingState: "stable",
+      remoteStreamCreated: false,
+      remoteVideoTrackPresent: false,
+      srcObjectBound: false,
+      playError: null,
+      bytesReceived: null,
+      selectedIceCandidateType: null,
+      lastRebindCause: null,
+      lastUpdatedAt: new Date().toISOString()
+    };
+  }
+
+  private updateViewerDiagnostics(sessionId: string, patch: Partial<ViewerPeerDiagnostics>) {
+    this.viewerDiagnostics.update((rows) => {
+      const current = rows[sessionId] ?? this.createViewerDiagnostics(sessionId);
+      return {
+        ...rows,
+        [sessionId]: {
+          ...current,
+          ...patch,
+          lastUpdatedAt: new Date().toISOString()
+        }
+      };
+    });
+  }
+
+  private startViewerStatsPolling(sessionId: string, peer: RTCPeerConnection) {
+    this.stopViewerStatsPolling(sessionId);
+
+    const timer = setInterval(() => {
+      void this.collectViewerStats(sessionId, peer);
+    }, 3_000);
+
+    this.viewerStatsPollTimers.set(sessionId, timer);
+  }
+
+  private stopViewerStatsPolling(sessionId: string) {
+    const timer = this.viewerStatsPollTimers.get(sessionId);
+    if (timer) {
+      clearInterval(timer);
+      this.viewerStatsPollTimers.delete(sessionId);
+    }
+  }
+
+  private clearAllViewerStatsPolling() {
+    for (const timer of this.viewerStatsPollTimers.values()) {
+      clearInterval(timer);
+    }
+    this.viewerStatsPollTimers.clear();
+  }
+
+  private async collectViewerStats(sessionId: string, peer: RTCPeerConnection) {
+    if (!this.viewerPeerConnections.has(sessionId)) {
+      return;
+    }
+
+    try {
+      const stats = await peer.getStats();
+      const { bytesReceived, selectedIceCandidateType } = this.extractViewerStats(stats);
+      this.updateViewerDiagnostics(sessionId, {
+        bytesReceived,
+        selectedIceCandidateType,
+        connectionState: peer.connectionState,
+        iceConnectionState: peer.iceConnectionState,
+        signalingState: peer.signalingState
+      });
+    } catch {
+      // Ignore polling errors for closed/transient peers.
+    }
+  }
+
+  private extractViewerStats(stats: RTCStatsReport) {
+    let bytesReceived: number | null = null;
+    let selectedPairId: string | null = null;
+    let selectedIceCandidateType: string | null = null;
+
+    stats.forEach((row) => {
+      const report = row as unknown as {
+        type: string;
+        selectedCandidatePairId?: string;
+        kind?: string;
+        isRemote?: boolean;
+        bytesReceived?: number;
+      };
+
+      if (report.type === "transport" && typeof report.selectedCandidatePairId === "string") {
+        selectedPairId = report.selectedCandidatePairId;
+      }
+
+      if (report.type === "inbound-rtp" && report.kind === "video" && report.isRemote !== true) {
+        const nextBytes = typeof report.bytesReceived === "number" ? report.bytesReceived : null;
+        if (nextBytes != null && (bytesReceived == null || nextBytes > bytesReceived)) {
+          bytesReceived = nextBytes;
+        }
+      }
+    });
+
+    stats.forEach((row) => {
+      const report = row as unknown as {
+        type: string;
+        id: string;
+        selected?: boolean;
+        localCandidateId?: string;
+        remoteCandidateId?: string;
+      };
+
+      if (report.type !== "candidate-pair") {
+        return;
+      }
+
+      const isSelected = report.selected === true || (selectedPairId != null && report.id === selectedPairId);
+      if (!isSelected) {
+        return;
+      }
+
+      const local = report.localCandidateId
+        ? (stats.get(report.localCandidateId) as unknown as { candidateType?: string } | undefined)
+        : undefined;
+      const remote = report.remoteCandidateId
+        ? (stats.get(report.remoteCandidateId) as unknown as { candidateType?: string } | undefined)
+        : undefined;
+
+      const localType = typeof local?.candidateType === "string" ? local.candidateType : null;
+      const remoteType = typeof remote?.candidateType === "string" ? remote.candidateType : null;
+
+      selectedIceCandidateType = localType && remoteType ? `${localType}->${remoteType}` : localType ?? remoteType;
+    });
+
+    return {
+      bytesReceived,
+      selectedIceCandidateType
+    };
+  }
+
+  private diag(scope: string, event: string, payload: Record<string, unknown>) {
+    console.info(`[live-camera][${scope}] ${event}`, {
+      at: new Date().toISOString(),
+      ...payload
+    });
   }
 
   private stopLocalSenderMedia() {

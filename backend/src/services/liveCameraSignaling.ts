@@ -15,7 +15,9 @@ type SignalClient = {
   userId: string;
   role: Role;
   mode: SocketMode;
+  connectionId: string;
   registeredSessionId: string | null;
+  lastHeartbeatAt: number;
 };
 
 type WireMessage = Record<string, unknown>;
@@ -39,9 +41,35 @@ const clients = new Set<SignalClient>();
 const clientsByUserId = new Map<string, Set<SignalClient>>();
 const sendersBySessionId = new Map<string, SignalClient>();
 const viewerOpenDedup = new Map<string, number>();
+const pendingSenderDisconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+const HEARTBEAT_SWEEP_MS = 10_000;
+const CLIENT_HEARTBEAT_TIMEOUT_MS = 40_000;
+const SENDER_DISCONNECT_GRACE_MS = 10_000;
+
+let connectionCounter = 0;
 
 function asText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function logDiag(scope: string, event: string, payload: Record<string, unknown>) {
+  console.info(`[live-camera][${scope}] ${event}`, {
+    at: new Date().toISOString(),
+    ...payload
+  });
+}
+
+function touchHeartbeat(client: SignalClient) {
+  client.lastHeartbeatAt = Date.now();
+}
+
+function clearPendingDisconnectTimer(sessionId: string) {
+  const timer = pendingSenderDisconnectTimers.get(sessionId);
+  if (timer) {
+    clearTimeout(timer);
+    pendingSenderDisconnectTimers.delete(sessionId);
+  }
 }
 
 function safeSend(client: SignalClient, payload: Record<string, unknown>) {
@@ -60,9 +88,19 @@ function addClient(client: SignalClient) {
   const bucket = clientsByUserId.get(client.userId) ?? new Set<SignalClient>();
   bucket.add(client);
   clientsByUserId.set(client.userId, bucket);
+
+  logDiag("ws", "socket-open", {
+    connectionId: client.connectionId,
+    mode: client.mode,
+    userId: client.userId
+  });
 }
 
-function removeClient(client: SignalClient) {
+function removeClient(client: SignalClient, context: { code?: number; reason?: string } = {}) {
+  if (!clients.has(client)) {
+    return;
+  }
+
   clients.delete(client);
 
   const bucket = clientsByUserId.get(client.userId);
@@ -75,14 +113,30 @@ function removeClient(client: SignalClient) {
 
   const sessionId = client.registeredSessionId;
   if (!sessionId) {
+    logDiag("ws", "socket-close", {
+      connectionId: client.connectionId,
+      mode: client.mode,
+      userId: client.userId,
+      code: context.code ?? null,
+      reason: context.reason ?? null
+    });
     return;
   }
 
   const mapped = sendersBySessionId.get(sessionId);
   if (mapped === client) {
     sendersBySessionId.delete(sessionId);
-    void markSessionEndedOnDisconnect(sessionId, client.userId);
+    scheduleSenderDisconnectCleanup(sessionId, client.userId);
   }
+
+  logDiag("ws", "socket-close", {
+    connectionId: client.connectionId,
+    mode: client.mode,
+    userId: client.userId,
+    sessionId,
+    code: context.code ?? null,
+    reason: context.reason ?? null
+  });
 }
 
 function forwardToViewers(viewerUserId: string, payload: Record<string, unknown>) {
@@ -133,6 +187,17 @@ function buildUpgradeUrl(req: IncomingMessage) {
   return new URL(req.url || "", `http://${host}`);
 }
 
+function scheduleSenderDisconnectCleanup(sessionId: string, userId: string) {
+  clearPendingDisconnectTimer(sessionId);
+
+  const timer = setTimeout(() => {
+    pendingSenderDisconnectTimers.delete(sessionId);
+    void markSessionEndedOnDisconnect(sessionId, userId);
+  }, SENDER_DISCONNECT_GRACE_MS);
+
+  pendingSenderDisconnectTimers.set(sessionId, timer);
+}
+
 async function markSessionEndedOnDisconnect(sessionId: string, userId: string) {
   const now = new Date();
   const update = await prisma.liveCameraSession.updateMany({
@@ -151,6 +216,11 @@ async function markSessionEndedOnDisconnect(sessionId: string, userId: string) {
   if (!update.count) {
     return;
   }
+
+  logDiag("session", "ended-on-disconnect", {
+    sessionId,
+    userId
+  });
 
   await writeLiveCameraEvent({
     userId,
@@ -175,6 +245,14 @@ async function markSessionEndedOnDisconnect(sessionId: string, userId: string) {
 async function setSessionStateAndBroadcast(payload: SessionSignalStatus, actorUserId: string) {
   const now = new Date();
   const terminal = TERMINAL_SESSION_STATES.has(payload.sessionStatus);
+
+  logDiag("session", "state-update", {
+    sessionId: payload.sessionId,
+    targetUserId: payload.targetUserId,
+    sessionStatus: payload.sessionStatus,
+    isActive: payload.isActive,
+    actorUserId
+  });
 
   await prisma.liveCameraSession.updateMany({
     where: {
@@ -280,33 +358,29 @@ async function handleRegisterSender(client: SignalClient, message: WireMessage) 
     }
   }
 
+  clearPendingDisconnectTimer(session.id);
   client.registeredSessionId = session.id;
   sendersBySessionId.set(session.id, client);
 
-  if (session.sessionStatus !== LiveCameraSessionStatus.LIVE) {
-    await setSessionStateAndBroadcast(
-      {
-        sessionId: session.id,
-        targetUserId: session.userId,
-        sessionStatus: LiveCameraSessionStatus.LIVE,
-        isActive: true
-      },
-      client.userId
-    );
-  } else {
-    broadcastToViewers({
-      type: "SESSION_STATE",
-      sessionId: session.id,
-      targetUserId: session.userId,
-      sessionStatus: session.sessionStatus,
-      isActive: true
-    });
-  }
+  broadcastToViewers({
+    type: "SESSION_STATE",
+    sessionId: session.id,
+    targetUserId: session.userId,
+    sessionStatus: session.sessionStatus,
+    isActive: true
+  });
 
   safeSend(client, {
     type: "SENDER_REGISTERED",
     sessionId: session.id,
     targetUserId: session.userId
+  });
+
+  logDiag("sender", "registered", {
+    connectionId: client.connectionId,
+    userId: client.userId,
+    sessionId: session.id,
+    status: session.sessionStatus
   });
 }
 
@@ -358,6 +432,13 @@ async function handleViewerOffer(client: SignalClient, message: WireMessage) {
     viewerPeerId,
     sdp
   });
+
+  logDiag("signal", "viewer-offer-forwarded", {
+    sessionId,
+    targetUserId,
+    viewerUserId: client.userId,
+    viewerPeerId
+  });
 }
 
 function handleSenderAnswer(client: SignalClient, message: WireMessage) {
@@ -389,6 +470,13 @@ function handleSenderAnswer(client: SignalClient, message: WireMessage) {
     viewerUserId,
     viewerPeerId,
     sdp
+  });
+
+  logDiag("signal", "sender-answer-forwarded", {
+    sessionId,
+    targetUserId,
+    viewerUserId,
+    viewerPeerId
   });
 }
 
@@ -426,6 +514,14 @@ function handleIceCandidate(client: SignalClient, message: WireMessage) {
       direction,
       candidate
     });
+
+    logDiag("signal", "ice-forwarded", {
+      sessionId,
+      targetUserId,
+      viewerUserId,
+      viewerPeerId,
+      direction
+    });
     return;
   }
 
@@ -448,6 +544,14 @@ function handleIceCandidate(client: SignalClient, message: WireMessage) {
       viewerPeerId,
       direction,
       candidate
+    });
+
+    logDiag("signal", "ice-forwarded", {
+      sessionId,
+      targetUserId,
+      viewerUserId,
+      viewerPeerId,
+      direction
     });
     return;
   }
@@ -490,12 +594,15 @@ async function handleSessionState(client: SignalClient, message: WireMessage) {
   }, client.userId);
 
   if (TERMINAL_SESSION_STATES.has(sessionStatus)) {
+    clearPendingDisconnectTimer(sessionId);
     sendersBySessionId.delete(sessionId);
     client.registeredSessionId = null;
   }
 }
 
 async function handleIncomingMessage(client: SignalClient, raw: RawData) {
+  touchHeartbeat(client);
+
   const message = parseMessage(raw);
   if (!message) {
     sendError(client, "Invalid signaling payload.", "BAD_JSON");
@@ -510,7 +617,11 @@ async function handleIncomingMessage(client: SignalClient, raw: RawData) {
 
   switch (type) {
     case "PING": {
-      safeSend(client, { type: "PONG", at: new Date().toISOString() });
+      safeSend(client, {
+        type: "PONG",
+        at: new Date().toISOString(),
+        pingId: asText(message.pingId)
+      });
       return;
     }
     case "REGISTER_SENDER": {
@@ -575,8 +686,93 @@ function rejectUpgrade(socket: Duplex, status: number, reason: string) {
   socket.destroy();
 }
 
+export function invalidateLiveCameraSessionSignaling(params: {
+  sessionId: string;
+  targetUserId: string;
+  reason: string;
+}) {
+  clearPendingDisconnectTimer(params.sessionId);
+
+  const sender = sendersBySessionId.get(params.sessionId);
+  if (sender) {
+    sendersBySessionId.delete(params.sessionId);
+    sender.registeredSessionId = null;
+    safeSend(sender, {
+      type: "SESSION_ENDED",
+      sessionId: params.sessionId,
+      targetUserId: params.targetUserId,
+      reason: params.reason
+    });
+    try {
+      sender.socket.close(4004, params.reason.slice(0, 120));
+    } catch {
+      removeClient(sender, { code: 4004, reason: params.reason });
+    }
+  }
+
+  broadcastToViewers({
+    type: "SESSION_STATE",
+    sessionId: params.sessionId,
+    targetUserId: params.targetUserId,
+    sessionStatus: LiveCameraSessionStatus.ENDED,
+    isActive: false,
+    reason: params.reason
+  });
+  broadcastToViewers({
+    type: "SESSION_ENDED",
+    sessionId: params.sessionId,
+    targetUserId: params.targetUserId,
+    reason: params.reason
+  });
+
+  logDiag("session", "invalidated", {
+    sessionId: params.sessionId,
+    targetUserId: params.targetUserId,
+    reason: params.reason
+  });
+}
+
+export function invalidateLiveCameraSessionsForUser(userId: string, reason: string, sessionIds?: string[]) {
+  const allowedIds = sessionIds ? new Set(sessionIds) : null;
+  for (const [sessionId, sender] of sendersBySessionId.entries()) {
+    if (sender.userId !== userId) {
+      continue;
+    }
+    if (allowedIds && !allowedIds.has(sessionId)) {
+      continue;
+    }
+    invalidateLiveCameraSessionSignaling({
+      sessionId,
+      targetUserId: userId,
+      reason
+    });
+  }
+}
+
 export function setupLiveCameraSignaling(server: Server) {
   const wss = new WebSocketServer({ noServer: true });
+  const heartbeatSweep = setInterval(() => {
+    const now = Date.now();
+    for (const client of clients) {
+      if (now - client.lastHeartbeatAt <= CLIENT_HEARTBEAT_TIMEOUT_MS) {
+        continue;
+      }
+
+      logDiag("ws", "heartbeat-timeout", {
+        connectionId: client.connectionId,
+        mode: client.mode,
+        userId: client.userId,
+        idleForMs: now - client.lastHeartbeatAt
+      });
+
+      try {
+        client.socket.close(4008, "Heartbeat timeout");
+      } catch {
+        removeClient(client, { code: 4008, reason: "Heartbeat timeout" });
+      }
+    }
+  }, HEARTBEAT_SWEEP_MS);
+  heartbeatSweep.unref?.();
 
   server.on("upgrade", async (req, socket, head) => {
     const resolved = await resolveClientFromRequest(req);
@@ -586,12 +782,15 @@ export function setupLiveCameraSignaling(server: Server) {
     }
 
     wss.handleUpgrade(req, socket, head, (ws) => {
+      connectionCounter += 1;
       const client: SignalClient = {
         socket: ws,
         userId: resolved.userId,
         role: resolved.role,
         mode: resolved.mode,
-        registeredSessionId: null
+        connectionId: `conn-${connectionCounter}`,
+        registeredSessionId: null,
+        lastHeartbeatAt: Date.now()
       };
 
       addClient(client);
@@ -606,18 +805,31 @@ export function setupLiveCameraSignaling(server: Server) {
         void handleIncomingMessage(client, raw);
       });
 
-      ws.on("close", () => {
-        removeClient(client);
+      ws.on("close", (code, reasonBuffer) => {
+        removeClient(client, { code, reason: String(reasonBuffer) });
       });
 
-      ws.on("error", () => {
-        removeClient(client);
+      ws.on("error", (error) => {
+        logDiag("ws", "socket-error", {
+          connectionId: client.connectionId,
+          mode: client.mode,
+          userId: client.userId,
+          error: error.message
+        });
+        removeClient(client, { reason: error.message });
       });
     });
   });
 
   return {
-    close: () => wss.close()
+    close: () => {
+      clearInterval(heartbeatSweep);
+      for (const timer of pendingSenderDisconnectTimers.values()) {
+        clearTimeout(timer);
+      }
+      pendingSenderDisconnectTimers.clear();
+      wss.close();
+    }
   };
 }
 

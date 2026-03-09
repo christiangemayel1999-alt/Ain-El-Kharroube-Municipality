@@ -13,6 +13,7 @@ import { validateBody, validateQuery } from "../middleware/validate";
 import { computeTrackingHealthState } from "../services/trackingPing";
 import { writeLiveCameraEvent } from "../services/liveCameraAudit";
 import { getLiveCameraIceConfig } from "../services/liveCameraIce";
+import { invalidateLiveCameraSessionSignaling } from "../services/liveCameraSignaling";
 import { asyncHandler } from "../utils/asyncHandler";
 
 const CONTROL_ROOM_VIEW_ROLES = [Role.ADMIN, Role.CASE_WORKER, Role.POLICE] as const;
@@ -224,6 +225,16 @@ liveCameraRouter.post(
     }
 
     const now = new Date();
+    const existingActiveSessions = await prisma.liveCameraSession.findMany({
+      where: {
+        userId: user.id,
+        isActive: true
+      },
+      select: {
+        id: true
+      }
+    });
+
     await prisma.liveCameraSession.updateMany({
       where: {
         userId: user.id,
@@ -235,6 +246,14 @@ liveCameraRouter.post(
         sessionStatus: LiveCameraSessionStatus.ENDED
       }
     });
+
+    for (const active of existingActiveSessions) {
+      invalidateLiveCameraSessionSignaling({
+        sessionId: active.id,
+        targetUserId: user.id,
+        reason: "REPLACED_BY_NEW_SESSION"
+      });
+    }
 
     const session = await prisma.liveCameraSession.create({
       data: {
@@ -311,6 +330,11 @@ liveCameraRouter.post(
     }
 
     if (!session.isActive) {
+      invalidateLiveCameraSessionSignaling({
+        sessionId: session.id,
+        targetUserId: session.userId,
+        reason: "ALREADY_INACTIVE"
+      });
       return res.json(session);
     }
 
@@ -350,6 +374,12 @@ liveCameraRouter.post(
         reason: normalizeOptionalText(payload.reason) ?? "STOPPED_BY_USER",
         stoppedAt: now.toISOString()
       }
+    });
+
+    invalidateLiveCameraSessionSignaling({
+      sessionId: session.id,
+      targetUserId: session.userId,
+      reason: normalizeOptionalText(payload.reason) ?? "STOPPED_BY_USER"
     });
 
     return res.json(updated);
@@ -458,6 +488,14 @@ liveCameraRouter.post(
           updatedAt: now.toISOString(),
           status: payload.sessionStatus
         }
+      });
+    }
+
+    if (terminal) {
+      invalidateLiveCameraSessionSignaling({
+        sessionId: session.id,
+        targetUserId: session.userId,
+        reason: payload.sessionStatus
       });
     }
 

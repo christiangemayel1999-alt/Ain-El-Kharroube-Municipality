@@ -16,7 +16,7 @@ import {
   LiveCameraSessionStatus,
   Role
 } from "../models";
-import { MediaStreamDirective } from "../directives/media-stream.directive";
+import { MediaStreamBindingState, MediaStreamDirective } from "../directives/media-stream.directive";
 import { ApiService } from "../services/api.service";
 import { AuthService } from "../services/auth.service";
 import { LiveCameraService } from "../services/live-camera.service";
@@ -47,6 +47,9 @@ type SelectCause = "MAP" | "SWITCH" | "SELECT";
           </div>
           <div class="toolbar-actions">
             <button mat-stroked-button type="button" (click)="refresh()" [disabled]="loading()">Refresh</button>
+            <button mat-button type="button" (click)="debugPanelEnabled.set(!debugPanelEnabled())">
+              {{ debugPanelEnabled() ? 'Hide debug' : 'Show debug' }}
+            </button>
             <a mat-button routerLink="/live-camera-logs">Camera logs</a>
           </div>
         </div>
@@ -122,6 +125,9 @@ type SelectCause = "MAP" | "SWITCH" | "SELECT";
               <video
                 #tileLeftVideo
                 [appMediaStream]="streamFor(session.id)"
+                [appMediaStreamSessionId]="session.id"
+                appMediaStreamTarget="tile"
+                (appMediaStreamState)="onMediaStreamBinding($event, 'tile')"
                 autoplay
                 playsinline
                 muted
@@ -180,15 +186,40 @@ type SelectCause = "MAP" | "SWITCH" | "SELECT";
               <video
                 #mainVideo
                 [appMediaStream]="streamFor(selected.id)"
+                [appMediaStreamSessionId]="selected.id"
+                appMediaStreamTarget="main"
+                (appMediaStreamState)="onMediaStreamBinding($event, 'main')"
                 autoplay
                 playsinline
                 controls
               ></video>
 
+              <p class="err small" *ngIf="streamErrorFor(selected.id)">{{ streamErrorFor(selected.id) }}</p>
+
               <p class="meta">
                 Last GPS: {{ selected.location?.lastReceivedAt ? (selected.location?.lastReceivedAt | date:'yyyy-MM-dd HH:mm:ss') : '-' }}
               </p>
               <p class="meta">GPS freshness: {{ formatFreshness(selected.location?.freshnessSeconds ?? null) }}</p>
+
+              <section class="debug-panel" *ngIf="debugPanelEnabled()">
+                <h4>Selected stream debug</h4>
+                <ng-container *ngIf="selectedDiagnostics() as d; else noDebug">
+                  <div>Session: {{ d.sessionId }}</div>
+                  <div>Socket connected: {{ d.socketConnected ? 'Yes' : 'No' }}</div>
+                  <div>Peer connection state: {{ d.connectionState }}</div>
+                  <div>ICE state: {{ d.iceConnectionState }}</div>
+                  <div>Signaling state: {{ d.signalingState }}</div>
+                  <div>Remote stream created: {{ d.remoteStreamCreated ? 'Yes' : 'No' }}</div>
+                  <div>Remote video track present: {{ d.remoteVideoTrackPresent ? 'Yes' : 'No' }}</div>
+                  <div>Video srcObject bound: {{ d.srcObjectBound ? 'Yes' : 'No' }}</div>
+                  <div>Bytes received: {{ d.bytesReceived ?? '-' }}</div>
+                  <div>Selected ICE candidate: {{ d.selectedIceCandidateType || '-' }}</div>
+                  <div>Play error: {{ d.playError || '-' }}</div>
+                </ng-container>
+                <ng-template #noDebug>
+                  <div>No diagnostics for selected stream yet.</div>
+                </ng-template>
+              </section>
             </ng-container>
 
             <ng-template #noSelection>
@@ -269,6 +300,9 @@ type SelectCause = "MAP" | "SWITCH" | "SELECT";
           <video
             #tileRightVideo
             [appMediaStream]="streamFor(session.id)"
+            [appMediaStreamSessionId]="session.id"
+            appMediaStreamTarget="tile"
+            (appMediaStreamState)="onMediaStreamBinding($event, 'tile')"
             autoplay
             playsinline
             muted
@@ -445,6 +479,22 @@ type SelectCause = "MAP" | "SWITCH" | "SELECT";
       .main-viewer {
         display: grid;
         gap: 0.45rem;
+      }
+
+      .debug-panel {
+        border: 1px solid #dbe3ef;
+        border-radius: 8px;
+        padding: 0.45rem;
+        background: #f8fafc;
+        color: #0f172a;
+        display: grid;
+        gap: 0.2rem;
+        font-size: 0.78rem;
+      }
+
+      .debug-panel h4 {
+        margin: 0 0 0.2rem 0;
+        font-size: 0.82rem;
       }
 
       .selected-header {
@@ -639,6 +689,7 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
   readonly error = signal<string | null>(null);
   readonly busySessionId = signal<string | null>(null);
   readonly selectedSessionId = signal<string | null>(null);
+  readonly debugPanelEnabled = signal(false);
 
   search = "";
   activeCameraOnly = false;
@@ -731,8 +782,32 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
   }
 
   streamErrorFor(sessionId: string) {
-    const value = this.camera.viewerErrors()[sessionId] ?? "";
-    return value.trim() || null;
+    const diagnostics = this.camera.viewerDiagnostics()[sessionId];
+    const transportError = (this.camera.viewerErrors()[sessionId] ?? "").trim();
+
+    if (diagnostics?.playError) {
+      return `Media received but playback failed: ${diagnostics.playError}`;
+    }
+
+    if (transportError) {
+      return transportError;
+    }
+
+    if (diagnostics) {
+      if (
+        !diagnostics.remoteStreamCreated &&
+        !diagnostics.remoteVideoTrackPresent &&
+        (diagnostics.bytesReceived == null || diagnostics.bytesReceived <= 0)
+      ) {
+        return "No media received yet from sender.";
+      }
+
+      if (diagnostics.remoteStreamCreated && diagnostics.remoteVideoTrackPresent && !diagnostics.srcObjectBound) {
+        return "Media received but not bound to the video element.";
+      }
+    }
+
+    return null;
   }
 
   tileState(session: LiveCameraSessionRecord) {
@@ -763,6 +838,18 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
       this.focusUserOnMap(session.userId);
     }
     this.renderMap(this.overview());
+  }
+
+  onMediaStreamBinding(state: MediaStreamBindingState, scope: "tile" | "main") {
+    this.camera.reportMediaStreamBindingState(state, scope);
+  }
+
+  selectedDiagnostics() {
+    const selected = this.selectedSession();
+    if (!selected) {
+      return null;
+    }
+    return this.camera.viewerDiagnostics()[selected.id] ?? null;
   }
 
   openRowStream(row: ControlRoomUserRow) {
