@@ -41,6 +41,7 @@ type SenderSocketWaiter = {
 export class LiveCameraService {
   private readonly senderPeerConnections = new Map<SenderPeerKey, RTCPeerConnection>();
   private readonly viewerPeerConnections = new Map<string, RTCPeerConnection>();
+  private readonly viewerPeerIdsBySession = new Map<string, string>();
   private readonly viewerTrackWaitTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly viewerReconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly viewerStatsPollTimers = new Map<string, ReturnType<typeof setInterval>>();
@@ -298,6 +299,7 @@ export class LiveCameraService {
     }
     this.viewerReconnectTimers.clear();
     this.viewerSessionsById.clear();
+    this.viewerPeerIdsBySession.clear();
     this.viewerStreams.set({});
     this.viewerSessionState.set({});
     this.viewerErrors.set({});
@@ -332,6 +334,7 @@ export class LiveCameraService {
       this.viewerStreams.set({});
       this.viewerSessionState.set({});
       this.viewerDiagnostics.set({});
+      this.viewerPeerIdsBySession.clear();
       return;
     }
 
@@ -445,9 +448,10 @@ export class LiveCameraService {
 
   private async openViewerPeer(session: LiveCameraSessionRecord) {
     const config = await this.getRtcConfiguration();
-    const viewerPeerId = session.id;
+    const viewerPeerId = this.createViewerPeerId(session.id);
     const peer = new RTCPeerConnection(config);
     this.viewerPeerConnections.set(session.id, peer);
+    this.viewerPeerIdsBySession.set(session.id, viewerPeerId);
     this.clearViewerTrackWaitTimer(session.id);
     this.startViewerStatsPolling(session.id, peer);
 
@@ -631,6 +635,7 @@ export class LiveCameraService {
       peer.close();
       this.viewerPeerConnections.delete(sessionId);
     }
+    this.viewerPeerIdsBySession.delete(sessionId);
     this.clearViewerTrackWaitTimer(sessionId);
     this.clearViewerReconnectTimer(sessionId);
     this.stopViewerStatsPolling(sessionId);
@@ -1116,7 +1121,17 @@ export class LiveCameraService {
       const sessionId = String(message["sessionId"] ?? "");
       const viewerPeerId = String(message["viewerPeerId"] ?? "");
       const sdp = message["sdp"] as RTCSessionDescriptionInit | undefined;
-      if (!sessionId || !viewerPeerId || !sdp || viewerPeerId !== sessionId) {
+      if (!sessionId || !viewerPeerId || !sdp) {
+        return;
+      }
+
+      const expectedViewerPeerId = this.viewerPeerIdsBySession.get(sessionId);
+      if (!expectedViewerPeerId || viewerPeerId !== expectedViewerPeerId) {
+        this.diag("viewer.signal", "stale-answer-ignored", {
+          sessionId,
+          viewerPeerId,
+          expectedViewerPeerId: expectedViewerPeerId ?? null
+        });
         return;
       }
 
@@ -1125,7 +1140,18 @@ export class LiveCameraService {
         return;
       }
 
-      void peer.setRemoteDescription(new RTCSessionDescription(sdp));
+      void peer.setRemoteDescription(new RTCSessionDescription(sdp)).catch((error) => {
+        const message = String((error as { message?: string })?.message ?? "Could not apply sender answer.");
+        this.viewerErrors.update((rows) => ({
+          ...rows,
+          [sessionId]: `Failed to apply sender SDP answer: ${message}`
+        }));
+        this.diag("viewer.signal", "set-remote-description-failed", {
+          sessionId,
+          viewerPeerId,
+          error: message
+        });
+      });
       return;
     }
 
@@ -1133,7 +1159,17 @@ export class LiveCameraService {
       const sessionId = String(message["sessionId"] ?? "");
       const viewerPeerId = String(message["viewerPeerId"] ?? "");
       const candidate = message["candidate"] as RTCIceCandidateInit | undefined;
-      if (!sessionId || viewerPeerId !== sessionId || !candidate) {
+      if (!sessionId || !viewerPeerId || !candidate) {
+        return;
+      }
+
+      const expectedViewerPeerId = this.viewerPeerIdsBySession.get(sessionId);
+      if (!expectedViewerPeerId || viewerPeerId !== expectedViewerPeerId) {
+        this.diag("viewer.signal", "stale-ice-ignored", {
+          sessionId,
+          viewerPeerId,
+          expectedViewerPeerId: expectedViewerPeerId ?? null
+        });
         return;
       }
 
@@ -1142,7 +1178,18 @@ export class LiveCameraService {
         return;
       }
 
-      void peer.addIceCandidate(new RTCIceCandidate(candidate));
+      void peer.addIceCandidate(new RTCIceCandidate(candidate)).catch((error) => {
+        const message = String((error as { message?: string })?.message ?? "Could not apply ICE candidate.");
+        this.viewerErrors.update((rows) => ({
+          ...rows,
+          [sessionId]: `Failed to apply sender ICE candidate: ${message}`
+        }));
+        this.diag("viewer.signal", "add-ice-candidate-failed", {
+          sessionId,
+          viewerPeerId,
+          error: message
+        });
+      });
       return;
     }
 
@@ -1721,6 +1768,14 @@ export class LiveCameraService {
       bytesReceived,
       selectedIceCandidateType
     };
+  }
+
+  private createViewerPeerId(sessionId: string) {
+    const suffix =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    return `${sessionId}:${suffix}`;
   }
 
   private diag(scope: string, event: string, payload: Record<string, unknown>) {
