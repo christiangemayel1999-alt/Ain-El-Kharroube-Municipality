@@ -13,12 +13,16 @@ import {
   ControlRoomMapUser,
   ControlRoomOverviewResponse,
   ControlRoomUserRow,
+  DashboardSummary,
   IncidentRecord,
   IncidentStatus,
   LiveCameraIceDebugSummary,
   LiveCameraLogRow,
   LiveCameraSessionRecord,
+  MapReference,
   Role,
+  ResponseUnit,
+  TrackingHealthState,
   TrackingLogRow,
   TrackingOverviewUser
 } from "../models";
@@ -32,6 +36,23 @@ type UnitOperationalStatus = "AVAILABLE" | "ASSIGNED" | "RESPONDING" | "ON_SCENE
 type IncidentBucket = "EMERGENCY" | "HIGH" | "MEDIUM" | "LOW";
 type EventLevel = "INFO" | "WARN" | "EMERGENCY";
 type RoleFilter = "ALL" | "POLICE" | "CASE_WORKER";
+type MapSelectionType = "CAMERA" | "INCIDENT" | "UNIT" | "HOUSEHOLD" | "REFERENCE";
+
+type CameraTileSource = {
+  userId: string;
+  name: string;
+  role: Role;
+  trackingHealthState: TrackingHealthState;
+  status: UnitOperationalStatus;
+  sessionId: string | null;
+  isLive: boolean;
+  location: {
+    latitude: number | null;
+    longitude: number | null;
+    freshnessSeconds: number | null;
+  };
+  label: string | null;
+};
 
 type ControlEventItem = {
   id: string;
@@ -89,6 +110,7 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
   private readonly router = inject(Router);
 
   readonly overview = signal<ControlRoomOverviewResponse | null>(null);
+  readonly dashboardSummary = signal<DashboardSummary | null>(null);
   readonly incidents = signal<IncidentRecord[]>([]);
   readonly trackingUsers = signal<TrackingOverviewUser[]>([]);
   readonly cameraLogs = signal<LiveCameraLogRow[]>([]);
@@ -103,6 +125,10 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
   readonly selectedSessionId = signal<string | null>(null);
   readonly selectedUserId = signal<string | null>(null);
   readonly selectedIncidentId = signal<string | null>(null);
+  readonly selectedResponseUnitId = signal<string | null>(null);
+  readonly selectedHouseholdId = signal<string | null>(null);
+  readonly selectedReferenceId = signal<string | null>(null);
+  readonly selectedMapType = signal<MapSelectionType | null>(null);
   readonly followSelectedUnit = signal(true);
   readonly debugPanelEnabled = signal(false);
   readonly unitStatusOverrides = signal<Record<string, UnitOperationalStatus>>({});
@@ -120,10 +146,16 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
   statusFilter: "ALL" | UnitOperationalStatus = "ALL";
 
   private map?: L.Map;
-  private readonly peopleLayer = L.layerGroup();
+  private readonly cameraLayer = L.layerGroup();
   private readonly incidentLayer = L.layerGroup();
+  private readonly householdLayer = L.layerGroup();
+  private readonly responseUnitLayer = L.layerGroup();
+  private readonly referenceLayer = L.layerGroup();
   private readonly peopleMarkersByUserId = new Map<string, L.Marker>();
   private readonly incidentMarkersById = new Map<string, L.Marker>();
+  private readonly householdMarkersById = new Map<string, L.Marker>();
+  private readonly responseUnitMarkersById = new Map<string, L.Marker>();
+  private readonly referenceMarkersById = new Map<string, L.Marker>();
   private readonly mapCenter: L.LatLngTuple = [33.93444, 35.69972];
   private readonly refreshIntervalMs = 9_000;
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -186,6 +218,11 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
     }
   }
 
+  @HostListener("window:resize")
+  onWindowResize() {
+    this.map?.invalidateSize();
+  }
+
   refresh(showLoading = true) {
     if (showLoading) {
       this.loading.set(true);
@@ -203,6 +240,9 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
     });
 
     const incidents$ = this.api.get<IncidentRecord[]>("/incidents").pipe(catchError(() => of([] as IncidentRecord[])));
+    const dashboard$ = this.api
+      .get<DashboardSummary>("/dashboard/summary")
+      .pipe(catchError(() => of(null as DashboardSummary | null)));
 
     const cameraLogs$ = this.api
       .getLiveCameraLogs({ page: 1, pageSize: 40 })
@@ -227,15 +267,17 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
 
     forkJoin({
       overview: overview$,
+      dashboard: dashboard$,
       incidents: incidents$,
       cameraLogs: cameraLogs$,
       trackingLogs: trackingLogs$,
       trackingUsers: trackingUsers$,
       iceDebug: iceDebug$
     }).subscribe({
-      next: ({ overview, incidents, cameraLogs, trackingLogs, trackingUsers, iceDebug }) => {
+      next: ({ overview, dashboard, incidents, cameraLogs, trackingLogs, trackingUsers, iceDebug }) => {
         this.loading.set(false);
         this.overview.set(overview);
+        this.dashboardSummary.set(dashboard);
         this.incidents.set(incidents);
         this.cameraLogs.set(cameraLogs.items);
         this.trackingLogs.set(trackingLogs.items);
@@ -244,8 +286,9 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
 
         this.syncSelection(overview.cameraSessions);
         void this.camera.syncViewerSessions(overview.cameraSessions);
-        this.rebuildEventFeed(this.cameraLogs(), this.trackingLogs(), incidents);
+        this.rebuildEventFeed(this.cameraLogs(), this.trackingLogs(), incidents, dashboard);
         this.renderMap(overview);
+        setTimeout(() => this.map?.invalidateSize(), 0);
       },
       error: (err) => {
         this.loading.set(false);
@@ -263,7 +306,7 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
       return;
     }
     this.syncSelection(overview.cameraSessions);
-    this.rebuildEventFeed(this.cameraLogs(), this.trackingLogs(), this.incidents());
+    this.rebuildEventFeed(this.cameraLogs(), this.trackingLogs(), this.incidents(), this.dashboardSummary());
     this.renderMap(overview);
   }
 
@@ -326,6 +369,10 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
     return this.incidents().find((incident) => incident.id === selectedId) ?? null;
   }
 
+  incidentForDetailPanel() {
+    return this.selectedIncident() ?? this.activeIncidents()[0] ?? null;
+  }
+
   selectedUnitRow() {
     const selectedUserId = this.selectedUserId();
     if (selectedUserId) {
@@ -355,6 +402,229 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
       return "-";
     }
     return this.unitStatusForUser(selected.userId);
+  }
+
+  systemName() {
+    return "Ain el-Kharroube Emergency Control Room";
+  }
+
+  populationMetric() {
+    return this.dashboardSummary()?.kpis.totalIndividuals ?? 0;
+  }
+
+  householdsMetric() {
+    const summary = this.dashboardSummary();
+    if (!summary) {
+      return 0;
+    }
+    return summary.kpis.totalHouseholdsActive ?? summary.mapMarkers.length;
+  }
+
+  activeIncidentsMetric() {
+    return this.overview()?.summary.activeIncidentsCount ?? this.activeIncidents().length;
+  }
+
+  incidentsTodayMetric() {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = now.getMonth();
+    const d = now.getDate();
+
+    return this.incidents().filter((incident) => {
+      const created = new Date(incident.createdAt);
+      return created.getFullYear() === y && created.getMonth() === m && created.getDate() === d;
+    }).length;
+  }
+
+  onlineCamerasMetric() {
+    return this.overview()?.summary.totalLiveCameraUsers ?? this.filteredSessions().length;
+  }
+
+  activeUnitsMetric() {
+    const summary = this.dashboardSummary();
+    if (!summary) {
+      return this.filteredUsers().filter((row) => this.unitStatusForUser(row.userId) !== "OFFLINE").length;
+    }
+
+    const unitIdsOnDispatch = new Set(summary.activeDispatches.map((dispatch) => dispatch.unitId));
+    return summary.responseUnits.filter((unit) => unit.status !== "OFFLINE" || unitIdsOnDispatch.has(unit.id)).length;
+  }
+
+  cameraSources() {
+    const overview = this.overview();
+    if (!overview) {
+      return [] as CameraTileSource[];
+    }
+
+    const sessionByUserId = new Map(overview.cameraSessions.map((session) => [session.userId, session]));
+    const mapUserById = new Map(overview.mapUsers.map((row) => [row.userId, row]));
+
+    return this.filteredUsers()
+      .filter((row) => row.visibleInControlRoom || row.canSendLiveCamera || Boolean(row.activeCameraSessionId))
+      .map((row) => {
+        const session = sessionByUserId.get(row.userId) ?? null;
+        const mapUser = mapUserById.get(row.userId) ?? null;
+        return {
+          userId: row.userId,
+          name: row.name,
+          role: row.role,
+          trackingHealthState: row.trackingHealthState,
+          status: this.unitStatusForUser(row.userId),
+          sessionId: session?.id ?? null,
+          isLive: Boolean(session),
+          location: {
+            latitude: session?.location?.latitude ?? mapUser?.latitude ?? row.lastKnownLocation.latitude,
+            longitude: session?.location?.longitude ?? mapUser?.longitude ?? row.lastKnownLocation.longitude,
+            freshnessSeconds: session?.location?.freshnessSeconds ?? mapUser?.freshnessSeconds ?? null
+          },
+          label: row.role === "POLICE" ? "Police Unit" : row.role === "CASE_WORKER" ? "Case Worker" : row.role
+        } satisfies CameraTileSource;
+      })
+      .sort((a, b) => {
+        if (a.isLive && !b.isLive) {
+          return -1;
+        }
+        if (!a.isLive && b.isLive) {
+          return 1;
+        }
+        const aEmergency = a.status === "EMERGENCY";
+        const bEmergency = b.status === "EMERGENCY";
+        if (aEmergency && !bEmergency) {
+          return -1;
+        }
+        if (!aEmergency && bEmergency) {
+          return 1;
+        }
+        return a.name.localeCompare(b.name);
+      });
+  }
+
+  cameraSourcesLeftColumn() {
+    const sources = this.cameraSources();
+    const splitIndex = Math.ceil(sources.length / 2);
+    return sources.slice(0, splitIndex);
+  }
+
+  cameraSourcesRightColumn() {
+    const sources = this.cameraSources();
+    const splitIndex = Math.ceil(sources.length / 2);
+    return sources.slice(splitIndex);
+  }
+
+  trackByCameraSource(_index: number, source: CameraTileSource) {
+    return source.userId;
+  }
+
+  isCameraSourceSelected(source: CameraTileSource) {
+    const selectedSessionId = this.selectedSessionId();
+    if (selectedSessionId && source.sessionId && selectedSessionId === source.sessionId) {
+      return true;
+    }
+    return this.selectedUserId() === source.userId;
+  }
+
+  cameraSourceBadgeClass(source: CameraTileSource) {
+    return source.isLive ? "is-live" : "is-off";
+  }
+
+  cameraSourceStatusLabel(source: CameraTileSource) {
+    if (!source.isLive) {
+      return "OFF";
+    }
+    const session = source.sessionId ? this.sessionById(source.sessionId) : null;
+    return session ? this.tileState(session) : "LIVE";
+  }
+
+  selectCameraSource(source: CameraTileSource) {
+    this.selectedMapType.set("CAMERA");
+    this.selectedResponseUnitId.set(null);
+    this.selectedHouseholdId.set(null);
+    this.selectedReferenceId.set(null);
+
+    this.selectUser(source.userId, "PANEL");
+    if (source.sessionId) {
+      this.selectSession(source.sessionId, "SELECT");
+      return;
+    }
+    this.focusUserOnMap(source.userId);
+  }
+
+  selectedResponseUnit() {
+    const id = this.selectedResponseUnitId();
+    if (!id) {
+      return null;
+    }
+    return this.dashboardSummary()?.responseUnits.find((row) => row.id === id) ?? null;
+  }
+
+  selectedHouseholdMarker() {
+    const id = this.selectedHouseholdId();
+    if (!id) {
+      return null;
+    }
+    return this.dashboardSummary()?.mapMarkers.find((row) => row.id === id) ?? null;
+  }
+
+  selectedReferenceMarker() {
+    const id = this.selectedReferenceId();
+    if (!id) {
+      return null;
+    }
+    return this.dashboardSummary()?.mapReferences.find((row) => row.id === id) ?? null;
+  }
+
+  recentIncidentFeed() {
+    return this.incidents()
+      .slice()
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, 40);
+  }
+
+  responseUnitRows() {
+    const summary = this.dashboardSummary();
+    if (!summary) {
+      return [] as ResponseUnit[];
+    }
+    return summary.responseUnits.slice().sort((a, b) => {
+      const rank = (status: ResponseUnit["status"]) => (status === "BUSY" ? 0 : status === "AVAILABLE" ? 1 : 2);
+      return rank(a.status) - rank(b.status) || a.name.localeCompare(b.name);
+    });
+  }
+
+  dispatchForUnit(unitId: string) {
+    return this.dashboardSummary()?.activeDispatches.find((row) => row.unitId === unitId) ?? null;
+  }
+
+  responseUnitBadgeClass(status: ResponseUnit["status"]) {
+    if (status === "BUSY") {
+      return "st-pill-responding";
+    }
+    if (status === "OFFLINE") {
+      return "st-pill-offline";
+    }
+    return "st-pill-available";
+  }
+
+  selectResponseUnit(unitId: string, focusMap: boolean) {
+    const unit = this.dashboardSummary()?.responseUnits.find((row) => row.id === unitId) ?? null;
+    if (!unit) {
+      return;
+    }
+    this.selectedMapType.set("UNIT");
+    this.selectedResponseUnitId.set(unit.id);
+    this.selectedIncidentId.set(null);
+    this.selectedHouseholdId.set(null);
+    this.selectedReferenceId.set(null);
+
+    if (unit.assignedOfficerId) {
+      this.selectUser(unit.assignedOfficerId, "PANEL");
+    }
+
+    if (focusMap) {
+      this.focusResponseUnitOnMap(unit.id);
+    } else {
+      this.renderMap(this.overview());
+    }
   }
 
   activeIncidents() {
@@ -428,7 +698,17 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
   }
 
   incidentPillClass(incident: IncidentRecord) {
-    return `st-pill-${this.incidentBucket(incident).toLowerCase()}`;
+    const bucket = this.incidentBucket(incident);
+    if (bucket === "EMERGENCY") {
+      return "st-pill-emergency";
+    }
+    if (bucket === "HIGH") {
+      return "st-pill-responding";
+    }
+    if (bucket === "MEDIUM") {
+      return "st-pill-assigned";
+    }
+    return "st-pill-available";
   }
 
   emergencyAlertsCount() {
@@ -582,6 +862,10 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
 
     this.selectedSessionId.set(sessionId);
     this.selectedUserId.set(session.userId);
+    this.selectedMapType.set("CAMERA");
+    this.selectedResponseUnitId.set(null);
+    this.selectedHouseholdId.set(null);
+    this.selectedReferenceId.set(null);
     this.camera.focusSessionOnViewer(session, cause === "SWITCH" ? "SWITCH" : "SELECT");
 
     if (this.followSelectedUnit()) {
@@ -592,6 +876,13 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
 
   selectUser(userId: string, source: "MAP" | "PANEL" | "STREAM" | "INCIDENT") {
     this.selectedUserId.set(userId);
+    if (source !== "INCIDENT") {
+      this.selectedMapType.set("CAMERA");
+      this.selectedIncidentId.set(null);
+      this.selectedResponseUnitId.set(null);
+      this.selectedHouseholdId.set(null);
+      this.selectedReferenceId.set(null);
+    }
     if (this.followSelectedUnit() || source === "MAP" || source === "INCIDENT") {
       this.focusUserOnMap(userId);
     }
@@ -612,6 +903,10 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
     }
 
     this.selectedIncidentId.set(incident.id);
+    this.selectedMapType.set("INCIDENT");
+    this.selectedResponseUnitId.set(null);
+    this.selectedHouseholdId.set(null);
+    this.selectedReferenceId.set(null);
     if (incident.assignedUserId) {
       this.selectUser(incident.assignedUserId, "INCIDENT");
     }
@@ -703,7 +998,51 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
     const zoom = Math.max(this.map.getZoom(), 15);
     this.map.flyTo(marker.getLatLng(), zoom, { duration: 0.35 });
     marker.openPopup();
+    this.selectedMapType.set("INCIDENT");
     this.selectedIncidentId.set(incidentId);
+    this.selectedResponseUnitId.set(null);
+    this.selectedHouseholdId.set(null);
+    this.selectedReferenceId.set(null);
+    this.renderMap(this.overview());
+  }
+
+  focusResponseUnitOnMap(unitId: string) {
+    if (!this.map) {
+      return;
+    }
+    const marker = this.responseUnitMarkersById.get(unitId);
+    if (!marker) {
+      return;
+    }
+
+    const zoom = Math.max(this.map.getZoom(), 15);
+    this.map.flyTo(marker.getLatLng(), zoom, { duration: 0.35 });
+    marker.openPopup();
+    this.selectedMapType.set("UNIT");
+    this.selectedResponseUnitId.set(unitId);
+    this.selectedIncidentId.set(null);
+    this.selectedHouseholdId.set(null);
+    this.selectedReferenceId.set(null);
+    this.renderMap(this.overview());
+  }
+
+  focusHouseholdOnMap(householdId: string) {
+    if (!this.map) {
+      return;
+    }
+    const marker = this.householdMarkersById.get(householdId);
+    if (!marker) {
+      return;
+    }
+
+    const zoom = Math.max(this.map.getZoom(), 15);
+    this.map.flyTo(marker.getLatLng(), zoom, { duration: 0.35 });
+    marker.openPopup();
+    this.selectedMapType.set("HOUSEHOLD");
+    this.selectedHouseholdId.set(householdId);
+    this.selectedIncidentId.set(null);
+    this.selectedResponseUnitId.set(null);
+    this.selectedReferenceId.set(null);
     this.renderMap(this.overview());
   }
 
@@ -717,6 +1056,15 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
       points.push(marker.getLatLng());
     }
     for (const marker of this.incidentMarkersById.values()) {
+      points.push(marker.getLatLng());
+    }
+    for (const marker of this.householdMarkersById.values()) {
+      points.push(marker.getLatLng());
+    }
+    for (const marker of this.responseUnitMarkersById.values()) {
+      points.push(marker.getLatLng());
+    }
+    for (const marker of this.referenceMarkersById.values()) {
       points.push(marker.getLatLng());
     }
 
@@ -992,7 +1340,12 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
     return `${Math.round(value / 60)}m ago`;
   }
 
-  private rebuildEventFeed(cameraLogs: LiveCameraLogRow[], trackingLogs: TrackingLogRow[], incidents: IncidentRecord[]) {
+  private rebuildEventFeed(
+    cameraLogs: LiveCameraLogRow[],
+    trackingLogs: TrackingLogRow[],
+    incidents: IncidentRecord[],
+    dashboard: DashboardSummary | null
+  ) {
     const incidentEvents = incidents.slice(0, 30).map((incident) => ({
       id: `incident-${incident.id}-${incident.updatedAt}`,
       at: incident.updatedAt,
@@ -1051,7 +1404,20 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
       };
     });
 
-    const merged = [...this.operatorEvents(), ...incidentEvents, ...cameraEvents, ...trackingEvents]
+    const dispatchEvents =
+      dashboard?.activeDispatches.map((dispatch) => ({
+        id: `dispatch-${dispatch.id}-${dispatch.updatedAt}`,
+        at: dispatch.updatedAt,
+        source: "INCIDENT" as const,
+        level: dispatch.status === "INVESTIGATING" || dispatch.status === "EN_ROUTE" ? ("WARN" as EventLevel) : ("INFO" as EventLevel),
+        label: `Dispatch ${dispatch.status}`,
+        detail: `${dispatch.unit.name} -> ${dispatch.incident.incidentCode}`,
+        userId: dispatch.officerId ?? dispatch.unit.assignedOfficerId ?? null,
+        sessionId: null,
+        incidentId: dispatch.incidentId
+      })) ?? [];
+
+    const merged = [...this.operatorEvents(), ...incidentEvents, ...cameraEvents, ...trackingEvents, ...dispatchEvents]
       .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
       .slice(0, 80);
 
@@ -1079,7 +1445,7 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
     };
 
     this.operatorEvents.update((rows) => [event, ...rows].slice(0, 40));
-    this.rebuildEventFeed(this.cameraLogs(), this.trackingLogs(), this.incidents());
+    this.rebuildEventFeed(this.cameraLogs(), this.trackingLogs(), this.incidents(), this.dashboardSummary());
   }
 
   private syncSelection(allSessions: LiveCameraSessionRecord[]) {
@@ -1122,19 +1488,42 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
       return;
     }
 
-    this.map = L.map("control-room-map", {
+    const mapContainer = document.getElementById("control-room-map");
+    if (!mapContainer) {
+      setTimeout(() => this.initMap(), 50);
+      return;
+    }
+
+    this.map = L.map(mapContainer, {
       center: this.mapCenter,
       zoom: 15,
-      maxZoom: 21
+      maxZoom: 22
     });
 
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-      attribution: "© OpenStreetMap contributors © CARTO",
-      maxZoom: 20
-    }).addTo(this.map);
+    L.tileLayer(
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      {
+        attribution: "Tiles © Esri - Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+        maxNativeZoom: 19,
+        maxZoom: 22
+      }
+    ).addTo(this.map);
 
-    this.peopleLayer.addTo(this.map);
+    L.tileLayer(
+      "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+      {
+        attribution: "Labels © Esri",
+        maxNativeZoom: 19,
+        maxZoom: 22
+      }
+    ).addTo(this.map);
+
+    this.cameraLayer.addTo(this.map);
     this.incidentLayer.addTo(this.map);
+    this.householdLayer.addTo(this.map);
+    this.responseUnitLayer.addTo(this.map);
+    this.referenceLayer.addTo(this.map);
+    setTimeout(() => this.map?.invalidateSize(), 0);
   }
 
   private renderMap(overview: ControlRoomOverviewResponse | null) {
@@ -1142,13 +1531,24 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
       return;
     }
 
-    this.peopleLayer.clearLayers();
+    const dashboard = this.dashboardSummary();
+
+    this.cameraLayer.clearLayers();
     this.incidentLayer.clearLayers();
+    this.householdLayer.clearLayers();
+    this.responseUnitLayer.clearLayers();
+    this.referenceLayer.clearLayers();
     this.peopleMarkersByUserId.clear();
     this.incidentMarkersById.clear();
+    this.householdMarkersById.clear();
+    this.responseUnitMarkersById.clear();
+    this.referenceMarkersById.clear();
 
     const selectedUserId = this.selectedUserId();
     const selectedIncidentId = this.selectedIncidentId();
+    const selectedResponseUnitId = this.selectedResponseUnitId();
+    const selectedHouseholdId = this.selectedHouseholdId();
+    const selectedReferenceId = this.selectedReferenceId();
 
     for (const user of this.filteredMapUsers(overview)) {
       const status = this.unitStatusForUser(user.userId);
@@ -1174,13 +1574,17 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
       });
 
       marker.on("click", () => {
+        this.selectedMapType.set("CAMERA");
+        this.selectedResponseUnitId.set(null);
+        this.selectedHouseholdId.set(null);
+        this.selectedReferenceId.set(null);
         this.selectUser(user.userId, "MAP");
         if (matchingSession) {
           this.selectSession(matchingSession.id, "MAP");
         }
       });
 
-      marker.addTo(this.peopleLayer);
+      marker.addTo(this.cameraLayer);
       this.peopleMarkersByUserId.set(user.userId, marker);
     }
 
@@ -1197,9 +1601,92 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
         `${this.escapeHtml(incident.incidentCode)} | ${this.escapeHtml(incident.title || incident.type)} | ${this.escapeHtml(incident.status)}`
       );
 
-      marker.on("click", () => this.selectIncident(incident.id, false));
+      marker.on("click", () => {
+        this.selectedMapType.set("INCIDENT");
+        this.selectIncident(incident.id, false);
+      });
       marker.addTo(this.incidentLayer);
       this.incidentMarkersById.set(incident.id, marker);
+    }
+
+    if (dashboard) {
+      for (const household of this.filteredHouseholdMarkers(dashboard)) {
+        const marker = L.marker([household.approxLat, household.approxLng], {
+          icon: this.createHouseholdIcon(household.id === selectedHouseholdId)
+        });
+
+        const householdName =
+          household.pinLabel ||
+          household.headName ||
+          [household.firstName, household.lastName].filter((value) => Boolean(value)).join(" ").trim() ||
+          "Household";
+        marker.bindPopup(
+          [
+            this.escapeHtml(household.householdCode),
+            this.escapeHtml(householdName),
+            `Family size: ${household.familySize}`,
+            `Safety: ${this.escapeHtml(household.safetyCheckStatus)}`
+          ].join(" | ")
+        );
+
+        marker.on("click", () => {
+          this.selectedMapType.set("HOUSEHOLD");
+          this.selectedHouseholdId.set(household.id);
+          this.selectedIncidentId.set(null);
+          this.selectedResponseUnitId.set(null);
+          this.selectedReferenceId.set(null);
+          this.renderMap(this.overview());
+        });
+
+        marker.addTo(this.householdLayer);
+        this.householdMarkersById.set(household.id, marker);
+      }
+
+      for (const unit of this.filteredResponseUnits(dashboard)) {
+        if (unit.latitude == null || unit.longitude == null) {
+          continue;
+        }
+        const marker = L.marker([unit.latitude, unit.longitude], {
+          icon: this.createResponseUnitIcon(unit, unit.id === selectedResponseUnitId)
+        });
+
+        marker.bindPopup(
+          [
+            this.escapeHtml(unit.name),
+            `${this.escapeHtml(unit.type)} | ${this.escapeHtml(unit.status)}`,
+            unit.assignedOfficer?.fullName ? `Officer: ${this.escapeHtml(unit.assignedOfficer.fullName)}` : "Officer: Unassigned"
+          ].join(" | ")
+        );
+
+        marker.on("click", () => this.selectResponseUnit(unit.id, false));
+        marker.addTo(this.responseUnitLayer);
+        this.responseUnitMarkersById.set(unit.id, marker);
+      }
+
+      for (const reference of this.filteredMapReferences(dashboard)) {
+        const marker = L.marker([reference.lat, reference.lng], {
+          icon: this.createReferenceIcon(reference, reference.id === selectedReferenceId)
+        });
+        marker.bindPopup(
+          [
+            this.escapeHtml(reference.name),
+            this.escapeHtml(reference.type),
+            this.escapeHtml(reference.description ?? "No description")
+          ].join(" | ")
+        );
+
+        marker.on("click", () => {
+          this.selectedMapType.set("REFERENCE");
+          this.selectedReferenceId.set(reference.id);
+          this.selectedIncidentId.set(null);
+          this.selectedResponseUnitId.set(null);
+          this.selectedHouseholdId.set(null);
+          this.renderMap(this.overview());
+        });
+
+        marker.addTo(this.referenceLayer);
+        this.referenceMarkersById.set(reference.id, marker);
+      }
     }
 
     if (this.followSelectedUnit() && selectedUserId) {
@@ -1228,6 +1715,121 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
           user.userId.toLowerCase().includes(search)
         );
       });
+  }
+
+  private filteredHouseholdMarkers(summary: DashboardSummary) {
+    const search = this.search.trim().toLowerCase();
+    return summary.mapMarkers
+      .filter((row) => row.approxLat != null && row.approxLng != null)
+      .filter((row) => {
+        if (!search) {
+          return true;
+        }
+        const haystack = [
+          row.householdCode,
+          row.pinLabel ?? "",
+          row.headName ?? "",
+          row.firstName ?? "",
+          row.lastName ?? "",
+          row.originArea ?? ""
+        ]
+          .join(" ")
+          .toLowerCase();
+        return haystack.includes(search);
+      })
+      .slice(0, 500);
+  }
+
+  private filteredResponseUnits(summary: DashboardSummary) {
+    const search = this.search.trim().toLowerCase();
+    return summary.responseUnits.filter((row) => {
+      if (!search) {
+        return true;
+      }
+      const haystack = [row.name, row.type, row.status, row.assignedOfficer?.fullName ?? ""].join(" ").toLowerCase();
+      return haystack.includes(search);
+    });
+  }
+
+  private filteredMapReferences(summary: DashboardSummary) {
+    const search = this.search.trim().toLowerCase();
+    return summary.mapReferences
+      .filter((row) => row.visible)
+      .filter((row) => {
+        if (!search) {
+          return true;
+        }
+        const haystack = [row.name, row.type, row.description ?? ""].join(" ").toLowerCase();
+        return haystack.includes(search);
+      });
+  }
+
+  private createHouseholdIcon(selected: boolean) {
+    const size = selected ? 24 : 20;
+    return L.divIcon({
+      className: "",
+      iconSize: [size, size],
+      iconAnchor: [Math.round(size / 2), Math.round(size / 2)],
+      popupAnchor: [0, -12],
+      html: `<div style="width:${size}px;height:${size}px;border-radius:999px;background:#1d4ed8;border:${selected ? "3px solid #67e8f9" : "2px solid rgba(147,197,253,.95)"};box-shadow:0 2px 7px rgba(0,0,0,.55);"></div>`
+    });
+  }
+
+  private createResponseUnitIcon(unit: ResponseUnit, selected: boolean) {
+    const background = unit.status === "BUSY" ? "#f97316" : unit.status === "OFFLINE" ? "#64748b" : "#16a34a";
+    const text = unit.type === "POLICE" ? "P" : unit.type === "CHECKPOINT" ? "C" : "M";
+    const size = selected ? 30 : 26;
+    return L.divIcon({
+      className: "",
+      iconSize: [size, size],
+      iconAnchor: [Math.round(size / 2), Math.round(size / 2)],
+      popupAnchor: [0, -12],
+      html: `<div style="width:${size}px;height:${size}px;border-radius:8px;background:${background};border:${selected ? "3px solid #67e8f9" : "2px solid rgba(248,250,252,.95)"};color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.55);">${text}</div>`
+    });
+  }
+
+  private createReferenceIcon(reference: MapReference, selected: boolean) {
+    const label = this.referenceMarkerLabel(reference.type);
+    const color = reference.color ?? "#475569";
+    const size = selected ? 30 : 26;
+    return L.divIcon({
+      className: "",
+      iconSize: [size, size],
+      iconAnchor: [Math.round(size / 2), Math.round(size / 2)],
+      popupAnchor: [0, -12],
+      html: `<div style="width:${size}px;height:${size}px;border-radius:8px;background:${color};border:${selected ? "3px solid #67e8f9" : "2px solid rgba(248,250,252,.95)"};color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.55);">${this.escapeHtml(label)}</div>`
+    });
+  }
+
+  private referenceMarkerLabel(type: MapReference["type"]) {
+    if (type === "CHECKPOINT") {
+      return "CP";
+    }
+    if (type === "IMPORTANT_BUILDING") {
+      return "BLD";
+    }
+    if (type === "MUNICIPALITY_POINT") {
+      return "MUN";
+    }
+    if (type === "CHURCH_MOSQUE") {
+      return "CM";
+    }
+    if (type === "WATER_POINT") {
+      return "WTR";
+    }
+    if (type === "ROAD") {
+      return "RD";
+    }
+    if (type === "SCHOOL") {
+      return "SCH";
+    }
+    if (type === "SHELTER") {
+      return "SHT";
+    }
+    if (type === "LANDMARK") {
+      return "LM";
+    }
+    return "REF";
   }
 
   private createUserIcon(
@@ -1340,6 +1942,10 @@ export class ControlRoomPageComponent implements AfterViewInit, OnDestroy {
 
   private sessionForUser(userId: string) {
     return (this.overview()?.cameraSessions ?? []).find((session) => session.userId === userId) ?? null;
+  }
+
+  private sessionById(sessionId: string) {
+    return (this.overview()?.cameraSessions ?? []).find((session) => session.id === sessionId) ?? null;
   }
 
   private userRowById(userId: string) {
